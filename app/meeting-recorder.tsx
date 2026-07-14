@@ -18,6 +18,7 @@ type MetaState = {
   mode: DisplayMode;
   title: string;
   content: string;
+  isThinking: boolean;
   updatedAt: number;
   meetingStatus: SessionState;
 };
@@ -56,12 +57,6 @@ const previewTranscript: TranscriptEntry[] = [
   },
 ];
 
-const initialTopics = [
-  "Pilot expansion depends on completing legal and security review",
-  "Weekly active workflows will be the primary success measure",
-  "The team is targeting a go / no-go decision next Wednesday",
-].join("\n");
-
 function formatTime(seconds: number, includeHours = false) {
   const safeSeconds = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(safeSeconds / 3600);
@@ -69,95 +64,6 @@ function formatTime(seconds: number, includeHours = false) {
   const secs = safeSeconds % 60;
   const clock = `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   return includeHours ? `${String(hours).padStart(2, "0")}:${clock}` : clock;
-}
-
-function fallbackInsight(
-  mode: InsightMode,
-  entries: TranscriptEntry[],
-  question = "",
-) {
-  if (!entries.length) {
-    return mode === "chat"
-      ? "There is no meeting content to search yet. Start recording or add a note first."
-      : "Insights will appear here as the meeting develops.";
-  }
-
-  if (entries[0]?.id.startsWith("preview")) {
-    if (mode === "actions") {
-      return [
-        "Arun — Send the revised security response — Friday",
-        "Unassigned — Confirm APAC data residency requirements — Timing not set",
-        "Priya — Prepare the team for a go / no-go decision — Next Wednesday",
-      ].join("\n");
-    }
-    if (mode === "summary") {
-      return [
-        "Outcome",
-        "The pilot is showing enough value to expand, pending legal and security review.",
-        "Key decisions",
-        "Measure success through weekly active workflows. Target a go / no-go decision next Wednesday.",
-        "Next steps",
-        "Arun will return the revised security response by Friday. The team still needs to confirm APAC data residency requirements.",
-      ].join("\n");
-    }
-    if (mode === "chat") {
-      const lower = question.toLowerCase();
-      if (lower.includes("block") || lower.includes("risk")) {
-        return "Legal and security review are the remaining blockers. APAC data residency is an open question that may need a separate response.";
-      }
-      if (lower.includes("owner") || lower.includes("friday")) {
-        return "Arun owns the revised security response and plans to send it by Friday.";
-      }
-      return "The meeting indicates that the pilot is working, with expansion dependent on legal and security review. The target decision is next Wednesday.";
-    }
-    return initialTopics;
-  }
-
-  const speech = entries.filter((entry) => entry.kind === "speech");
-  const notes = entries.filter((entry) => entry.kind === "note");
-
-  if (mode === "actions") {
-    const actionLike = speech.filter((entry) =>
-      /\b(will|can|own|send|follow up|schedule|confirm|prepare|by (monday|tuesday|wednesday|thursday|friday))\b/i.test(
-        entry.text,
-      ),
-    );
-    return actionLike.length
-      ? actionLike
-          .slice(-5)
-          .map((entry) => `${entry.speaker} — ${entry.text}`)
-          .join("\n")
-      : "No explicit action items have been identified yet.";
-  }
-
-  if (mode === "summary") {
-    return [
-      "Outcome",
-      speech.slice(-2).map((entry) => entry.text).join(" ") || "No outcome recorded yet.",
-      "Notes",
-      notes.map((entry) => entry.text).join(" ") || "No additional notes were added.",
-    ].join("\n");
-  }
-
-  if (mode === "chat") {
-    const terms = question
-      .toLowerCase()
-      .split(/\W+/)
-      .filter((word) => word.length > 3);
-    const match = [...entries]
-      .reverse()
-      .find((entry) => terms.some((term) => entry.text.toLowerCase().includes(term)));
-    return match
-      ? `${match.speaker} said: “${match.text}”`
-      : "I could not find that in the meeting content so far.";
-  }
-
-  return speech.length
-    ? speech
-        .slice(-4)
-        .map((entry) => entry.text)
-        .join("\n")
-    : "Key topics will appear when speech is transcribed.";
 }
 
 function modeTitle(mode: InsightMode | null) {
@@ -229,6 +135,17 @@ function InsightText({ content }: { content: string }) {
   );
 }
 
+function ThinkingIndicator() {
+  return (
+    <div className="thinking-indicator" role="status" aria-live="polite">
+      <span>Thinking</span>
+      <span className="thinking-dots" aria-hidden="true">
+        <i /><i /><i />
+      </span>
+    </div>
+  );
+}
+
 export function MeetingRecorder() {
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -253,11 +170,17 @@ export function MeetingRecorder() {
   const pausedAtRef = useRef(0);
   const pausedDurationRef = useRef(0);
   const elapsedRef = useRef(0);
+  const sessionStateRef = useRef<SessionState>(sessionState);
+  const observedEntriesRef = useRef(entries);
   const analysisRequestRef = useRef(0);
 
   useEffect(() => {
     elapsedRef.current = elapsed;
   }, [elapsed]);
+
+  useEffect(() => {
+    sessionStateRef.current = sessionState;
+  }, [sessionState]);
 
   useEffect(() => {
     if (sessionState !== "recording") return;
@@ -271,13 +194,18 @@ export function MeetingRecorder() {
   }, [sessionState]);
 
   const publishMeta = useCallback(
-    (nextMode: InsightMode | null = mode, nextContent = insight) => {
+    (
+      nextMode: InsightMode | null,
+      nextContent: string,
+      nextIsThinking: boolean,
+    ) => {
       const payload: MetaState = {
         mode: nextMode ?? "idle",
         title: modeTitle(nextMode),
         content: nextContent,
+        isThinking: nextIsThinking,
         updatedAt: Date.now(),
-        meetingStatus: sessionState,
+        meetingStatus: sessionStateRef.current,
       };
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -288,12 +216,12 @@ export function MeetingRecorder() {
         // The embedded preview can restrict cross-tab storage.
       }
     },
-    [insight, mode, sessionState],
+    [],
   );
 
   useEffect(() => {
-    publishMeta();
-  }, [publishMeta]);
+    publishMeta(mode, insight, isThinking);
+  }, [insight, isThinking, mode, publishMeta, sessionState]);
 
   const transcriptForAnalysis = useCallback((source = entries) => {
     return source
@@ -307,11 +235,10 @@ export function MeetingRecorder() {
   const runAnalysis = useCallback(
     async (nextMode: InsightMode, nextQuestion = "", source = entries) => {
       const requestId = ++analysisRequestRef.current;
-      const fallback = fallbackInsight(nextMode, source, nextQuestion);
       setMode(nextMode);
-      setInsight(fallback);
+      setInsight("");
       setIsThinking(true);
-      publishMeta(nextMode, fallback);
+      publishMeta(nextMode, "", true);
 
       try {
         const response = await fetch("/api/analyze", {
@@ -327,10 +254,19 @@ export function MeetingRecorder() {
         if (!response.ok || !result.text) throw new Error("fallback");
         if (requestId === analysisRequestRef.current) {
           setInsight(result.text);
-          publishMeta(nextMode, result.text);
+          setIsThinking(false);
+          publishMeta(nextMode, result.text, false);
         }
       } catch {
-        // The deterministic local insight remains visible when no API key is configured.
+        if (requestId === analysisRequestRef.current) {
+          const message =
+            nextMode === "chat"
+              ? "An answer could not be generated. Please try again."
+              : `${modeTitle(nextMode)} could not be generated. Please try again.`;
+          setInsight(message);
+          setIsThinking(false);
+          publishMeta(nextMode, message, false);
+        }
       } finally {
         if (requestId === analysisRequestRef.current) setIsThinking(false);
       }
@@ -339,7 +275,10 @@ export function MeetingRecorder() {
   );
 
   useEffect(() => {
+    const entriesChanged = observedEntriesRef.current !== entries;
+    observedEntriesRef.current = entries;
     if (
+      !entriesChanged ||
       entries[0]?.id.startsWith("preview") ||
       mode === null ||
       (mode !== "topics" && mode !== "actions")
@@ -803,9 +742,10 @@ export function MeetingRecorder() {
           <div className="meta-preview">
             <div className="meta-preview-header">
               <span>{modeTitle(mode)}</span>
-              {isThinking && <i>Updating…</i>}
             </div>
-            {mode ? (
+            {isThinking ? (
+              <ThinkingIndicator />
+            ) : mode ? (
               <InsightText content={insight} />
             ) : (
               <div className="insight-empty">

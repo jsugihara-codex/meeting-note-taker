@@ -806,6 +806,40 @@ button {
   text-align: center;
 }
 
+.thinking-indicator {
+  min-height: 228px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.thinking-dots i {
+  width: 5px;
+  height: 5px;
+  display: block;
+  border-radius: 50%;
+  background: currentColor;
+  animation: thinking-pulse 1.05s ease-in-out infinite;
+}
+
+.thinking-dots i:nth-child(2) { animation-delay: 0.14s; }
+.thinking-dots i:nth-child(3) { animation-delay: 0.28s; }
+
+@keyframes thinking-pulse {
+  0%, 60%, 100% { opacity: 0.28; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-4px); }
+}
+
 .insight-text {
   min-height: 228px;
   padding: 17px 14px 16px;
@@ -971,8 +1005,25 @@ button {
   line-height: 1.4;
 }
 
+.display-thinking-indicator {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  gap: clamp(12px, 1.3vw, 20px);
+  color: #b9d9cb;
+  font-size: clamp(22px, 2.8vw, 42px);
+  font-weight: 540;
+}
+
+.display-thinking-indicator .thinking-dots { gap: clamp(5px, 0.7vw, 10px); }
+.display-thinking-indicator .thinking-dots i {
+  width: clamp(7px, 0.75vw, 12px);
+  height: clamp(7px, 0.75vw, 12px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .typewriter-cursor { animation: none; }
+  .thinking-dots i { animation: none; opacity: 0.7; }
 }
 
 .display-lines h2 {

@@ -6,6 +6,7 @@ type MetaState = {
   mode: "idle" | "topics" | "actions" | "chat" | "summary";
   title: string;
   content: string;
+  isThinking?: boolean;
   updatedAt: number;
   meetingStatus: "idle" | "connecting" | "recording" | "paused" | "stopped";
 };
@@ -17,6 +18,7 @@ const fallback: MetaState = {
   mode: "idle",
   title: "Meeting intelligence",
   content: "",
+  isThinking: false,
   updatedAt: Date.now(),
   meetingStatus: "idle",
 };
@@ -78,7 +80,14 @@ export default function MetaDisplay() {
         </div>
         <h1>{meta.title}</h1>
         <div className="display-rule" />
-        {meta.mode === "idle" ? (
+        {meta.isThinking ? (
+          <div className="display-thinking-indicator" role="status" aria-live="polite">
+            <span>Thinking</span>
+            <span className="thinking-dots" aria-hidden="true">
+              <i /><i /><i />
+            </span>
+          </div>
+        ) : meta.mode === "idle" ? (
           <div className="display-empty-state">
             Choose Key Topics, Action Items, or Chat from the recorder.
           </div>
