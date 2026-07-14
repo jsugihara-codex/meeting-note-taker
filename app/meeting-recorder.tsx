@@ -362,7 +362,16 @@ export function MeetingRecorder() {
         body: peer.localDescription?.sdp ?? offer.sdp,
       });
 
-      if (!response.ok) throw new Error("not-configured");
+      if (!response.ok) {
+        let message = "Live transcription could not connect.";
+        try {
+          const result = (await response.json()) as { error?: string };
+          message = result.error ?? message;
+        } catch {
+          // Keep the fallback when the server did not return JSON.
+        }
+        throw new Error(message);
+      }
       const answerSdp = await response.text();
       await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
     },
@@ -395,10 +404,14 @@ export function MeetingRecorder() {
       pausedDurationRef.current = 0;
       setSessionState("recording");
 
-      connectRealtime(stream).catch(() => {
+      connectRealtime(stream).catch((issue: unknown) => {
         setConnection("device");
         setError(
-          "Recording on this device. Connect an OpenAI API key to enable live transcription and meeting intelligence.",
+          `Recording on this device. ${
+            issue instanceof Error
+              ? issue.message
+              : "Live transcription could not connect."
+          }`,
         );
       });
     } catch {
