@@ -40,30 +40,52 @@ export async function POST(request: Request) {
     },
   };
 
-  const form = new FormData();
-  form.append("sdp", new Blob([sdp], { type: "application/sdp" }), "offer.sdp");
-  form.append(
-    "session",
-    new Blob([JSON.stringify(session)], { type: "application/json" }),
-    "session.json",
-  );
+  // OpenAI expects both values as multipart fields, not file uploads. FormData
+  // adds a filename for Blob values, which causes the Realtime API to ignore
+  // the SDP field, so build the two typed fields explicitly.
+  const boundary = `----meeting-room-${crypto.randomUUID()}`;
+  const body = [
+    `--${boundary}\r\n`,
+    'Content-Disposition: form-data; name="sdp"\r\n',
+    "Content-Type: application/sdp\r\n\r\n",
+    sdp,
+    "\r\n",
+    `--${boundary}\r\n`,
+    'Content-Disposition: form-data; name="session"\r\n',
+    "Content-Type: application/json\r\n\r\n",
+    JSON.stringify(session),
+    "\r\n",
+    `--${boundary}--\r\n`,
+  ].join("");
 
   try {
     const upstream = await fetch("https://api.openai.com/v1/realtime/calls", {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: form,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
     });
 
-    const body = await upstream.text();
+    const responseBody = await upstream.text();
     if (!upstream.ok) {
+      let detail = "Unable to start live transcription.";
+      try {
+        const parsed = JSON.parse(responseBody) as {
+          error?: { message?: string };
+        };
+        detail = parsed.error?.message ?? detail;
+      } catch {
+        // Keep the safe fallback when the upstream response is not JSON.
+      }
       return Response.json(
-        { error: "Unable to start live transcription.", detail: body },
+        { error: detail },
         { status: upstream.status },
       );
     }
 
-    return new Response(body, {
+    return new Response(responseBody, {
       status: 201,
       headers: { "Content-Type": "application/sdp" },
     });
