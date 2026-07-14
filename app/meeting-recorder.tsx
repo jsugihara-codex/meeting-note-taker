@@ -518,13 +518,14 @@ export function MeetingRecorder() {
           <span className={`status-dot ${sessionState}`} />
           {statusLabel}
         </div>
-        <button
+        <a
           className="display-link"
-          type="button"
-          onClick={() => window.open("/display", "meeting-room-display")}
+          href="/display"
+          target="_blank"
+          rel="noopener noreferrer"
         >
           Open Meta Display <span aria-hidden="true">↗</span>
-        </button>
+        </a>
       </header>
 
       <div className="workspace" id="top">
@@ -749,9 +750,14 @@ export function MeetingRecorder() {
                 Generate meeting summary
               </button>
             )}
-            <button className="open-display-button" type="button" onClick={() => window.open("/display", "meeting-room-display")}>
+            <a
+              className="open-display-button"
+              href="/display"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               Present on Meta Display <span aria-hidden="true">↗</span>
-            </button>
+            </a>
           </div>
         </aside>
       </div>
