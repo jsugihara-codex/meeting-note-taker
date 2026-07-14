@@ -141,6 +141,7 @@ button {
   color: #46504b;
   font-size: 13px;
   font-weight: 650;
+  text-decoration: none;
   cursor: pointer;
 }
 
@@ -840,7 +841,7 @@ button {
 }
 
 .summary-button { background: var(--green); color: #fff; }
-.open-display-button { border: 1px solid #dfe4e1; background: #f8faf9; color: #49534e; }
+.open-display-button { border: 1px solid #dfe4e1; background: #f8faf9; color: #49534e; text-decoration: none; }
 .open-display-button span { margin-left: auto; font-size: 15px; }
 
 /* Meta Display */
