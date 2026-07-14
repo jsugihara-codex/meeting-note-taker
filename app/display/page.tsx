@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 type MetaState = {
-  mode: "topics" | "actions" | "chat" | "summary";
+  mode: "idle" | "topics" | "actions" | "chat" | "summary";
   title: string;
   content: string;
   updatedAt: number;
@@ -11,16 +11,12 @@ type MetaState = {
 };
 
 const CHANNEL_NAME = "meeting-room-meta-display";
-const STORAGE_KEY = "meeting-room-meta-state";
+const STORAGE_KEY = "meeting-room-meta-state-v2";
 
 const fallback: MetaState = {
-  mode: "topics",
-  title: "Key topics",
-  content: [
-    "Pilot expansion depends on completing legal and security review",
-    "Weekly active workflows will be the primary success measure",
-    "The team is targeting a go / no-go decision next Wednesday",
-  ].join("\n"),
+  mode: "idle",
+  title: "Meeting intelligence",
+  content: "",
   updatedAt: Date.now(),
   meetingStatus: "idle",
 };
@@ -82,20 +78,26 @@ export default function MetaDisplay() {
         </div>
         <h1>{meta.title}</h1>
         <div className="display-rule" />
-        <div className="display-lines">
-          {meta.content.split("\n").filter(Boolean).map((line, index) => {
-            const clean = line.replace(/^[-•*]\s*/, "").replace(/\*\*/g, "");
-            const isHeading = /^(Outcome|Key decisions|Next steps|Notes):?$/i.test(clean);
-            return isHeading ? (
-              <h2 key={`${line}-${index}`}>{clean.replace(/:$/, "")}</h2>
-            ) : (
-              <article key={`${line}-${index}`}>
-                {meta.mode !== "chat" && <span>{String(index + 1).padStart(2, "0")}</span>}
-                <p>{clean}</p>
-              </article>
-            );
-          })}
-        </div>
+        {meta.mode === "idle" ? (
+          <div className="display-empty-state">
+            Choose Key Topics, Action Items, or Chat from the recorder.
+          </div>
+        ) : (
+          <div className="display-lines">
+            {meta.content.split("\n").filter(Boolean).map((line, index) => {
+              const clean = line.replace(/^[-•*]\s*/, "").replace(/\*\*/g, "");
+              const isHeading = /^(Outcome|Key decisions|Next steps|Notes):?$/i.test(clean);
+              return isHeading ? (
+                <h2 key={`${line}-${index}`}>{clean.replace(/:$/, "")}</h2>
+              ) : (
+                <article key={`${line}-${index}`}>
+                  {meta.mode !== "chat" && <span>{String(index + 1).padStart(2, "0")}</span>}
+                  <p>{clean}</p>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       <footer className="display-footer">

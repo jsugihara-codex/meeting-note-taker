@@ -592,6 +592,22 @@ button {
   line-height: 1.58;
 }
 
+.typewriter-text { white-space: pre-wrap; }
+.typewriter-cursor {
+  width: 1px;
+  height: 1em;
+  margin-left: 2px;
+  display: inline-block;
+  vertical-align: -0.14em;
+  background: currentColor;
+  animation: typewriter-blink 0.72s steps(1) infinite;
+}
+
+@keyframes typewriter-blink {
+  0%, 48% { opacity: 1; }
+  49%, 100% { opacity: 0; }
+}
+
 .transcript-entry.note > div:last-child {
   padding: 10px 12px;
   border-radius: 9px;
@@ -779,6 +795,17 @@ button {
   font-weight: 600;
 }
 
+.insight-empty {
+  min-height: 148px;
+  padding: 25px 20px;
+  display: grid;
+  place-items: center;
+  color: #818b86;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
 .insight-text {
   min-height: 228px;
   padding: 17px 14px 16px;
@@ -935,6 +962,17 @@ button {
   max-width: 1200px;
   display: grid;
   gap: clamp(14px, 2.2vh, 28px);
+}
+
+.display-empty-state {
+  max-width: 760px;
+  color: #91a099;
+  font-size: clamp(20px, 2.1vw, 32px);
+  line-height: 1.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typewriter-cursor { animation: none; }
 }
 
 .display-lines h2 {

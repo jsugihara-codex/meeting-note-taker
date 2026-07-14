@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 type SessionState = "idle" | "connecting" | "recording" | "paused" | "stopped";
 type InsightMode = "topics" | "actions" | "chat" | "summary";
+type DisplayMode = InsightMode | "idle";
 
 type TranscriptEntry = {
   id: string;
@@ -14,7 +15,7 @@ type TranscriptEntry = {
 };
 
 type MetaState = {
-  mode: InsightMode;
+  mode: DisplayMode;
   title: string;
   content: string;
   updatedAt: number;
@@ -22,7 +23,7 @@ type MetaState = {
 };
 
 const CHANNEL_NAME = "meeting-room-meta-display";
-const STORAGE_KEY = "meeting-room-meta-state";
+const STORAGE_KEY = "meeting-room-meta-state-v2";
 
 const previewTranscript: TranscriptEntry[] = [
   {
@@ -159,13 +160,54 @@ function fallbackInsight(
     : "Key topics will appear when speech is transcribed.";
 }
 
-function modeTitle(mode: InsightMode) {
+function modeTitle(mode: InsightMode | null) {
+  if (!mode) return "Select an action";
   return {
     topics: "Key topics",
     actions: "Action items",
     chat: "Meeting answer",
     summary: "Meeting summary",
   }[mode];
+}
+
+function TypewriterText({ text, startDelay = 0 }: { text: string; startDelay?: number }) {
+  const [visibleText, setVisibleText] = useState("");
+  const [isReady, setIsReady] = useState(startDelay === 0);
+
+  useEffect(() => {
+    if (startDelay === 0) return;
+    const timer = window.setTimeout(() => setIsReady(true), startDelay);
+    return () => window.clearTimeout(timer);
+  }, [startDelay]);
+
+  useEffect(() => {
+    if (!isReady) return;
+    let nextText: string;
+    let delay = 18;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      nextText = text;
+      delay = 0;
+    } else if (!text.startsWith(visibleText)) {
+      nextText = "";
+      delay = 0;
+    } else {
+      if (visibleText.length >= text.length) return;
+      nextText = text.slice(0, visibleText.length + 1);
+    }
+    const timer = window.setTimeout(
+      () => setVisibleText(nextText),
+      delay,
+    );
+    return () => window.clearTimeout(timer);
+  }, [isReady, text, visibleText]);
+
+  const isTyping = isReady && visibleText.length < text.length;
+  return (
+    <span className="typewriter-text" aria-label={text}>
+      <span aria-hidden="true">{visibleText}</span>
+      {isTyping && <span className="typewriter-cursor" aria-hidden="true" />}
+    </span>
+  );
 }
 
 function InsightText({ content }: { content: string }) {
@@ -194,8 +236,8 @@ export function MeetingRecorder() {
   const [liveDraft, setLiveDraft] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState("");
-  const [mode, setMode] = useState<InsightMode>("topics");
-  const [insight, setInsight] = useState(initialTopics);
+  const [mode, setMode] = useState<InsightMode | null>(null);
+  const [insight, setInsight] = useState("");
   const [question, setQuestion] = useState("");
   const [isThinking, setIsThinking] = useState(false);
   const [connection, setConnection] = useState<"preview" | "live" | "device">(
@@ -229,9 +271,9 @@ export function MeetingRecorder() {
   }, [sessionState]);
 
   const publishMeta = useCallback(
-    (nextMode = mode, nextContent = insight) => {
+    (nextMode: InsightMode | null = mode, nextContent = insight) => {
       const payload: MetaState = {
-        mode: nextMode,
+        mode: nextMode ?? "idle",
         title: modeTitle(nextMode),
         content: nextContent,
         updatedAt: Date.now(),
@@ -299,6 +341,7 @@ export function MeetingRecorder() {
   useEffect(() => {
     if (
       entries[0]?.id.startsWith("preview") ||
+      mode === null ||
       (mode !== "topics" && mode !== "actions")
     ) {
       return;
@@ -396,8 +439,10 @@ export function MeetingRecorder() {
       recorder.start(1000);
 
       setEntries([]);
-      setInsight("Key topics will appear here as the conversation develops.");
-      setMode("topics");
+      analysisRequestRef.current += 1;
+      setIsThinking(false);
+      setInsight("");
+      setMode(null);
       setElapsed(0);
       setConnection("device");
       startedAtRef.current = Date.now();
@@ -667,13 +712,18 @@ export function MeetingRecorder() {
                   <p>Speech and timestamped notes will appear here in real time.</p>
                 </div>
               )}
-              {entries.map((entry) => (
+              {entries.map((entry, index) => (
                 <article className={`transcript-entry ${entry.kind}`} key={entry.id}>
                   <time>{formatTime(entry.time)}</time>
                   <div className="speaker-avatar">{entry.kind === "note" ? "✦" : entry.speaker.charAt(0)}</div>
                   <div>
                     <h3>{entry.kind === "note" ? "Meeting note" : entry.speaker}</h3>
-                    <p>{entry.text}</p>
+                    <p>
+                      <TypewriterText
+                        text={entry.text}
+                        startDelay={entry.id.startsWith("preview") ? index * 180 : 0}
+                      />
+                    </p>
                   </div>
                 </article>
               ))}
@@ -681,7 +731,10 @@ export function MeetingRecorder() {
                 <article className="transcript-entry draft">
                   <time>{formatTime(elapsed)}</time>
                   <div className="speaker-avatar">S</div>
-                  <div><h3>Speaker <span>transcribing</span></h3><p>{liveDraft}</p></div>
+                  <div>
+                    <h3>Speaker <span>transcribing</span></h3>
+                    <p><TypewriterText text={liveDraft} /></p>
+                  </div>
                 </article>
               )}
             </div>
@@ -722,6 +775,8 @@ export function MeetingRecorder() {
               role="tab"
               aria-selected={mode === "chat"}
               onClick={() => {
+                analysisRequestRef.current += 1;
+                setIsThinking(false);
                 setMode("chat");
                 setInsight("Ask a question about anything discussed in the meeting.");
               }}
@@ -750,7 +805,13 @@ export function MeetingRecorder() {
               <span>{modeTitle(mode)}</span>
               {isThinking && <i>Updating…</i>}
             </div>
-            <InsightText content={insight} />
+            {mode ? (
+              <InsightText content={insight} />
+            ) : (
+              <div className="insight-empty">
+                Select Key Topics, Action Items, or Chat to begin.
+              </div>
+            )}
           </div>
 
           <p className="panel-note">
