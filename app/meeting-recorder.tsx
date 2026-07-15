@@ -166,6 +166,7 @@ export function MeetingRecorder() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const metaChannelRef = useRef<BroadcastChannel | null>(null);
   const startedAtRef = useRef(0);
   const pausedAtRef = useRef(0);
   const pausedDurationRef = useRef(0);
@@ -186,6 +187,16 @@ export function MeetingRecorder() {
   useEffect(() => {
     sessionStateRef.current = sessionState;
   }, [sessionState]);
+
+  useEffect(() => {
+    if (!("BroadcastChannel" in window)) return;
+    const channel = new BroadcastChannel(CHANNEL_NAME);
+    metaChannelRef.current = channel;
+    return () => {
+      channel.close();
+      metaChannelRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!transcriptAutoScrollRef.current) return;
@@ -224,11 +235,13 @@ export function MeetingRecorder() {
       };
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-        const channel = new BroadcastChannel(CHANNEL_NAME);
-        channel.postMessage(payload);
-        channel.close();
       } catch {
         // The embedded preview can restrict cross-tab storage.
+      }
+      try {
+        metaChannelRef.current?.postMessage(payload);
+      } catch {
+        // Storage polling keeps an open display synchronized as a fallback.
       }
     },
     [],

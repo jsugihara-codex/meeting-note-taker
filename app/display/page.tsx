@@ -19,7 +19,7 @@ const fallback: MetaState = {
   title: "Meeting intelligence",
   content: "",
   isThinking: false,
-  updatedAt: Date.now(),
+  updatedAt: 0,
   meetingStatus: "idle",
 };
 
@@ -27,28 +27,53 @@ export default function MetaDisplay() {
   const [meta, setMeta] = useState<MetaState>(fallback);
 
   useEffect(() => {
-    const initialSync = window.setTimeout(() => {
+    const applyMeta = (next: MetaState) => {
+      setMeta((current) =>
+        next.updatedAt >= current.updatedAt ? next : current,
+      );
+    };
+
+    const syncFromStorage = () => {
       try {
         const stored = localStorage.getItem(STORAGE_KEY);
-        if (stored) setMeta(JSON.parse(stored) as MetaState);
+        if (stored) applyMeta(JSON.parse(stored) as MetaState);
       } catch {
         // Keep the preview content when storage is restricted.
       }
-    }, 0);
+    };
 
-    const channel = new BroadcastChannel(CHANNEL_NAME);
-    channel.onmessage = (event: MessageEvent<MetaState>) => setMeta(event.data);
+    const initialSync = window.setTimeout(syncFromStorage, 0);
+    const storageSync = window.setInterval(syncFromStorage, 750);
+
+    const channel = "BroadcastChannel" in window
+      ? new BroadcastChannel(CHANNEL_NAME)
+      : null;
+    if (channel) {
+      channel.onmessage = (event: MessageEvent<MetaState>) => applyMeta(event.data);
+    }
 
     const onStorage = (event: StorageEvent) => {
       if (event.key === STORAGE_KEY && event.newValue) {
-        setMeta(JSON.parse(event.newValue) as MetaState);
+        try {
+          applyMeta(JSON.parse(event.newValue) as MetaState);
+        } catch {
+          // The next polling cycle will retry the durable stored state.
+        }
       }
     };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") syncFromStorage();
+    };
     window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", syncFromStorage);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.clearTimeout(initialSync);
-      channel.close();
+      window.clearInterval(storageSync);
+      channel?.close();
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", syncFromStorage);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 
@@ -112,7 +137,9 @@ export default function MetaDisplay() {
       <footer className="display-footer">
         <p>Updates automatically from the recorder</p>
         <time>
-          Last updated {new Date(meta.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          {meta.updatedAt > 0
+            ? `Last updated ${new Date(meta.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+            : "Waiting for an action"}
         </time>
       </footer>
     </main>
