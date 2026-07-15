@@ -64,15 +64,34 @@ export default function MetaDisplay() {
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") syncFromStorage();
     };
+    const onMessage = (event: MessageEvent) => {
+      if (
+        event.origin === window.location.origin &&
+        event.data?.type === "meeting-room-meta-state" &&
+        event.data.payload
+      ) {
+        applyMeta(event.data.payload as MetaState);
+      }
+    };
     window.addEventListener("storage", onStorage);
     window.addEventListener("focus", syncFromStorage);
+    window.addEventListener("message", onMessage);
     document.addEventListener("visibilitychange", onVisibilityChange);
+    try {
+      window.opener?.postMessage(
+        { type: "meeting-room-meta-display-ready" },
+        window.location.origin,
+      );
+    } catch {
+      // Broadcast and storage sync remain available without an opener.
+    }
     return () => {
       window.clearTimeout(initialSync);
       window.clearInterval(storageSync);
       channel?.close();
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", syncFromStorage);
+      window.removeEventListener("message", onMessage);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);

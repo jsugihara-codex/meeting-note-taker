@@ -26,6 +26,44 @@ type MetaState = {
 
 const CHANNEL_NAME = "meeting-room-meta-display";
 const STORAGE_KEY = "meeting-room-meta-state-v2";
+const PARAGRAPH_BREAK_MS = 800;
+const LIVE_COMMIT_INTERVAL_MS = 600;
+const SERVER_VAD_SILENCE_MS = 250;
+
+function appendTranscriptChunk(current: string, incoming: string) {
+  const base = current.replace(/\s+/g, " ").trim();
+  const next = incoming.replace(/\s+/g, " ").trim();
+  if (!base) return next;
+  if (!next) return base;
+
+  const normalizedBase = base.toLocaleLowerCase();
+  const normalizedNext = next.toLocaleLowerCase();
+  if (
+    normalizedBase === normalizedNext ||
+    normalizedBase.endsWith(normalizedNext)
+  ) {
+    return base;
+  }
+  if (normalizedNext.startsWith(normalizedBase)) return next;
+
+  const baseWords = base.split(" ");
+  const nextWords = next.split(" ");
+  const normalizeWord = (word: string) =>
+    word.toLocaleLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  const maxOverlap = Math.min(baseWords.length, nextWords.length, 24);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    const baseSuffix = baseWords.slice(-size).map(normalizeWord).join(" ");
+    const nextPrefix = nextWords.slice(0, size).map(normalizeWord).join(" ");
+    if (baseSuffix && baseSuffix === nextPrefix) {
+      return [...baseWords, ...nextWords.slice(size)].join(" ");
+    }
+  }
+  return `${base} ${next}`;
+}
+
+function mergeTranscriptChunks(chunks: string[]) {
+  return chunks.reduce(appendTranscriptChunk, "");
+}
 
 const previewTranscript: TranscriptEntry[] = [
   {
@@ -167,6 +205,8 @@ export function MeetingRecorder() {
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const metaChannelRef = useRef<BroadcastChannel | null>(null);
+  const metaDisplayWindowRef = useRef<Window | null>(null);
+  const latestMetaRef = useRef<MetaState | null>(null);
   const startedAtRef = useRef(0);
   const pausedAtRef = useRef(0);
   const pausedDurationRef = useRef(0);
@@ -177,8 +217,15 @@ export function MeetingRecorder() {
   const transcriptListRef = useRef<HTMLDivElement | null>(null);
   const transcriptAutoScrollRef = useRef(true);
   const processedTranscriptionEventsRef = useRef(new Set<string>());
-  const transcriptionDraftsRef = useRef(new Map<string, string>());
-  const transcriptionStartedAtRef = useRef(new Map<string, number>());
+  const speechCommitTimerRef = useRef<number | null>(null);
+  const lastSpeechEndMsRef = useRef<number | null>(null);
+  const activeParagraphIdRef = useRef<string | null>(null);
+  const pendingCommitParagraphsRef = useRef<string[]>([]);
+  const transcriptionItemParagraphRef = useRef(new Map<string, string>());
+  const transcriptionItemTextRef = useRef(new Map<string, string>());
+  const completedTranscriptionItemsRef = useRef(new Set<string>());
+  const paragraphItemIdsRef = useRef(new Map<string, string[]>());
+  const paragraphStartedAtRef = useRef(new Map<string, number>());
 
   useEffect(() => {
     elapsedRef.current = elapsed;
@@ -196,6 +243,28 @@ export function MeetingRecorder() {
       channel.close();
       metaChannelRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (
+        event.origin !== window.location.origin ||
+        event.data?.type !== "meeting-room-meta-display-ready" ||
+        !event.source
+      ) {
+        return;
+      }
+      metaDisplayWindowRef.current = event.source as Window;
+      const latest = latestMetaRef.current;
+      if (latest) {
+        metaDisplayWindowRef.current.postMessage(
+          { type: "meeting-room-meta-state", payload: latest },
+          window.location.origin,
+        );
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
   }, []);
 
   useEffect(() => {
@@ -233,6 +302,7 @@ export function MeetingRecorder() {
         updatedAt: Date.now(),
         meetingStatus: sessionStateRef.current,
       };
+      latestMetaRef.current = payload;
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
       } catch {
@@ -242,6 +312,14 @@ export function MeetingRecorder() {
         metaChannelRef.current?.postMessage(payload);
       } catch {
         // Storage polling keeps an open display synchronized as a fallback.
+      }
+      try {
+        metaDisplayWindowRef.current?.postMessage(
+          { type: "meeting-room-meta-state", payload },
+          window.location.origin,
+        );
+      } catch {
+        metaDisplayWindowRef.current = null;
       }
     },
     [],
@@ -317,77 +395,64 @@ export function MeetingRecorder() {
     return () => window.clearTimeout(timer);
   }, [entries, mode, runAnalysis]);
 
+  const stopSpeechCommitLoop = useCallback(() => {
+    if (speechCommitTimerRef.current !== null) {
+      window.clearInterval(speechCommitTimerRef.current);
+      speechCommitTimerRef.current = null;
+    }
+  }, []);
+
   const handleRealtimeEvent = useCallback((event: MessageEvent<string>) => {
     try {
       const message = JSON.parse(event.data) as {
         type?: string;
         event_id?: string;
         item_id?: string;
+        audio_start_ms?: number;
+        audio_end_ms?: number;
         delta?: string;
         transcript?: string;
         error?: { message?: string };
       };
-      if (message.type === "conversation.item.input_audio_transcription.delta") {
-        if (
-          !message.item_id ||
-          !message.delta ||
-          (message.event_id && processedTranscriptionEventsRef.current.has(message.event_id))
-        ) {
-          return;
-        }
-        if (message.event_id) {
-          processedTranscriptionEventsRef.current.add(message.event_id);
-        }
-        if (!transcriptionStartedAtRef.current.has(message.item_id)) {
-          transcriptionStartedAtRef.current.set(message.item_id, elapsedRef.current);
-        }
 
-        const entryId = `transcript-${message.item_id}`;
-        const nextText =
-          (transcriptionDraftsRef.current.get(message.item_id) ?? "") + message.delta;
-        transcriptionDraftsRef.current.set(message.item_id, nextText);
-        const startedAt = transcriptionStartedAtRef.current.get(message.item_id) ?? elapsedRef.current;
-
-        setEntries((current) => {
-          const existingIndex = current.findIndex((entry) => entry.id === entryId);
-          if (existingIndex === -1) {
-            return [
-              ...current,
-              {
-                id: entryId,
-                time: startedAt,
-                speaker: "Transcript",
-                text: nextText,
-                kind: "speech",
-                draft: true,
-              },
-            ];
-          }
-          const next = [...current];
-          next[existingIndex] = { ...next[existingIndex], text: nextText, draft: true };
-          return next;
-        });
-      }
       if (
-        message.type === "conversation.item.input_audio_transcription.completed" &&
-        message.item_id &&
-        message.transcript?.trim()
+        message.event_id &&
+        processedTranscriptionEventsRef.current.has(message.event_id)
       ) {
-        if (
-          message.event_id &&
-          processedTranscriptionEventsRef.current.has(message.event_id)
-        ) {
-          return;
-        }
-        if (message.event_id) {
-          processedTranscriptionEventsRef.current.add(message.event_id);
-        }
+        return;
+      }
+      if (message.event_id) {
+        processedTranscriptionEventsRef.current.add(message.event_id);
+      }
 
-        const text = message.transcript.trim();
-        const entryId = `transcript-${message.item_id}`;
-        const startedAt =
-          transcriptionStartedAtRef.current.get(message.item_id) ?? elapsedRef.current;
-
+      const createParagraph = () => {
+        const paragraphId = crypto.randomUUID();
+        activeParagraphIdRef.current = paragraphId;
+        paragraphStartedAtRef.current.set(paragraphId, elapsedRef.current);
+        paragraphItemIdsRef.current.set(paragraphId, []);
+        return paragraphId;
+      };
+      const activeParagraph = () =>
+        activeParagraphIdRef.current ?? createParagraph();
+      const registerItem = (itemId: string, paragraphId = activeParagraph()) => {
+        transcriptionItemParagraphRef.current.set(itemId, paragraphId);
+        const itemIds = paragraphItemIdsRef.current.get(paragraphId) ?? [];
+        if (!itemIds.includes(itemId)) {
+          paragraphItemIdsRef.current.set(paragraphId, [...itemIds, itemId]);
+        }
+        return paragraphId;
+      };
+      const updateParagraph = (paragraphId: string) => {
+        const itemIds = paragraphItemIdsRef.current.get(paragraphId) ?? [];
+        const text = mergeTranscriptChunks(
+          itemIds.map((itemId) => transcriptionItemTextRef.current.get(itemId) ?? ""),
+        );
+        if (!text) return;
+        const entryId = `paragraph-${paragraphId}`;
+        const startedAt = paragraphStartedAtRef.current.get(paragraphId) ?? elapsedRef.current;
+        const draft = itemIds.some(
+          (itemId) => !completedTranscriptionItemsRef.current.has(itemId),
+        );
         setEntries((current) => {
           const existingIndex = current.findIndex((entry) => entry.id === entryId);
           if (existingIndex === -1) {
@@ -399,25 +464,110 @@ export function MeetingRecorder() {
                 speaker: "Transcript",
                 text,
                 kind: "speech",
+                draft,
               },
             ];
           }
-          if (current[existingIndex].text === text) return current;
+          if (
+            current[existingIndex].text === text &&
+            current[existingIndex].draft === draft
+          ) {
+            return current;
+          }
           const next = [...current];
-          next[existingIndex] = { ...next[existingIndex], text, draft: false };
+          next[existingIndex] = { ...next[existingIndex], text, draft };
           return next;
         });
+      };
 
-        transcriptionDraftsRef.current.delete(message.item_id);
-        transcriptionStartedAtRef.current.delete(message.item_id);
+      if (message.type === "input_audio_buffer.speech_started") {
+        const audioStartMs = message.audio_start_ms ?? elapsedRef.current * 1000;
+        const gapMs = lastSpeechEndMsRef.current === null
+          ? 0
+          : audioStartMs - lastSpeechEndMsRef.current;
+        if (!activeParagraphIdRef.current || gapMs > PARAGRAPH_BREAK_MS) {
+          createParagraph();
+        }
+        if (message.item_id) registerItem(message.item_id);
+        if (speechCommitTimerRef.current === null) {
+          speechCommitTimerRef.current = window.setInterval(() => {
+            const channel = dataChannelRef.current;
+            const paragraphId = activeParagraphIdRef.current;
+            if (
+              sessionStateRef.current !== "recording" ||
+              channel?.readyState !== "open" ||
+              !paragraphId
+            ) {
+              return;
+            }
+            try {
+              channel.send(JSON.stringify({
+                type: "input_audio_buffer.commit",
+                event_id: `commit-${crypto.randomUUID()}`,
+              }));
+              pendingCommitParagraphsRef.current.push(paragraphId);
+            } catch {
+              // The next interval retries while speech remains active.
+            }
+          }, LIVE_COMMIT_INTERVAL_MS);
+        }
+        return;
       }
+
+      if (message.type === "input_audio_buffer.speech_stopped") {
+        stopSpeechCommitLoop();
+        if (message.item_id) registerItem(message.item_id);
+        const audioEndMs = message.audio_end_ms ?? elapsedRef.current * 1000;
+        lastSpeechEndMsRef.current = Math.max(
+          0,
+          audioEndMs - SERVER_VAD_SILENCE_MS,
+        );
+        return;
+      }
+
+      if (message.type === "input_audio_buffer.committed" && message.item_id) {
+        const paragraphId =
+          pendingCommitParagraphsRef.current.shift() ?? activeParagraph();
+        registerItem(message.item_id, paragraphId);
+        return;
+      }
+
+      if (
+        message.type === "conversation.item.input_audio_transcription.delta" &&
+        message.item_id &&
+        message.delta
+      ) {
+        const paragraphId =
+          transcriptionItemParagraphRef.current.get(message.item_id) ??
+          registerItem(message.item_id);
+        const nextText =
+          (transcriptionItemTextRef.current.get(message.item_id) ?? "") + message.delta;
+        transcriptionItemTextRef.current.set(message.item_id, nextText);
+        updateParagraph(paragraphId);
+        return;
+      }
+
+      if (
+        message.type === "conversation.item.input_audio_transcription.completed" &&
+        message.item_id &&
+        message.transcript?.trim()
+      ) {
+        const paragraphId =
+          transcriptionItemParagraphRef.current.get(message.item_id) ??
+          registerItem(message.item_id);
+        transcriptionItemTextRef.current.set(message.item_id, message.transcript.trim());
+        completedTranscriptionItemsRef.current.add(message.item_id);
+        updateParagraph(paragraphId);
+        return;
+      }
+
       if (message.type === "error") {
         setError(message.error?.message ?? "Live transcription had a recoverable error.");
       }
     } catch {
       // Ignore non-JSON WebRTC control events.
     }
-  }, []);
+  }, [stopSpeechCommitLoop]);
 
   const connectRealtime = useCallback(
     async (stream: MediaStream) => {
@@ -473,8 +623,15 @@ export function MeetingRecorder() {
 
       setEntries([]);
       processedTranscriptionEventsRef.current.clear();
-      transcriptionDraftsRef.current.clear();
-      transcriptionStartedAtRef.current.clear();
+      stopSpeechCommitLoop();
+      lastSpeechEndMsRef.current = null;
+      activeParagraphIdRef.current = null;
+      pendingCommitParagraphsRef.current = [];
+      transcriptionItemParagraphRef.current.clear();
+      transcriptionItemTextRef.current.clear();
+      completedTranscriptionItemsRef.current.clear();
+      paragraphItemIdsRef.current.clear();
+      paragraphStartedAtRef.current.clear();
       analysisRequestRef.current += 1;
       setIsThinking(false);
       setInsight("");
@@ -508,6 +665,7 @@ export function MeetingRecorder() {
       track.enabled = false;
     });
     pausedAtRef.current = Date.now();
+    stopSpeechCommitLoop();
     setSessionState("paused");
   };
 
@@ -524,6 +682,7 @@ export function MeetingRecorder() {
   };
 
   const stopRecording = () => {
+    stopSpeechCommitLoop();
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
@@ -539,10 +698,11 @@ export function MeetingRecorder() {
 
   useEffect(() => {
     return () => {
+      stopSpeechCommitLoop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       peerRef.current?.close();
     };
-  }, []);
+  }, [stopSpeechCommitLoop]);
 
   const saveNote = (event: FormEvent) => {
     event.preventDefault();
@@ -614,8 +774,8 @@ export function MeetingRecorder() {
         <a
           className="display-link"
           href="/display"
-          target="_blank"
-          rel="noopener noreferrer"
+          target="meeting-room-meta-display"
+          rel="opener"
         >
           Open Meta Display <span aria-hidden="true">↗</span>
         </a>
@@ -869,8 +1029,8 @@ export function MeetingRecorder() {
             <a
               className="open-display-button"
               href="/display"
-              target="_blank"
-              rel="noopener noreferrer"
+              target="meeting-room-meta-display"
+              rel="opener"
             >
               Present on Meta Display <span aria-hidden="true">↗</span>
             </a>
