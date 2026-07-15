@@ -27,7 +27,6 @@ type MetaState = {
 const CHANNEL_NAME = "meeting-room-meta-display";
 const STORAGE_KEY = "meeting-room-meta-state-v2";
 const PARAGRAPH_BREAK_MS = 800;
-const LIVE_COMMIT_INTERVAL_MS = 600;
 const SERVER_VAD_SILENCE_MS = 250;
 
 function appendTranscriptChunk(current: string, incoming: string) {
@@ -64,37 +63,6 @@ function appendTranscriptChunk(current: string, incoming: string) {
 function mergeTranscriptChunks(chunks: string[]) {
   return chunks.reduce(appendTranscriptChunk, "");
 }
-
-const previewTranscript: TranscriptEntry[] = [
-  {
-    id: "preview-1",
-    time: 12,
-    speaker: "Maya",
-    text: "The pilot is working. Legal and security review are the only blockers to expanding it to the wider team.",
-    kind: "speech",
-  },
-  {
-    id: "preview-2",
-    time: 31,
-    speaker: "Arun",
-    text: "I can own the revised security response and get it back to the customer by Friday.",
-    kind: "speech",
-  },
-  {
-    id: "preview-note",
-    time: 43,
-    speaker: "Note",
-    text: "Confirm whether APAC data residency needs a separate answer.",
-    kind: "note",
-  },
-  {
-    id: "preview-3",
-    time: 54,
-    speaker: "Priya",
-    text: "Let’s target a decision next Wednesday and measure success through weekly active workflows, not licensed seats.",
-    kind: "speech",
-  },
-];
 
 function formatTime(seconds: number, includeHours = false) {
   const safeSeconds = Math.max(0, Math.floor(seconds));
@@ -188,7 +156,7 @@ function ThinkingIndicator() {
 export function MeetingRecorder() {
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [elapsed, setElapsed] = useState(0);
-  const [entries, setEntries] = useState<TranscriptEntry[]>(previewTranscript);
+  const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState("");
   const [mode, setMode] = useState<InsightMode | null>(null);
@@ -217,10 +185,8 @@ export function MeetingRecorder() {
   const transcriptListRef = useRef<HTMLDivElement | null>(null);
   const transcriptAutoScrollRef = useRef(true);
   const processedTranscriptionEventsRef = useRef(new Set<string>());
-  const speechCommitTimerRef = useRef<number | null>(null);
   const lastSpeechEndMsRef = useRef<number | null>(null);
   const activeParagraphIdRef = useRef<string | null>(null);
-  const pendingCommitParagraphsRef = useRef<string[]>([]);
   const transcriptionItemParagraphRef = useRef(new Map<string, string>());
   const transcriptionItemTextRef = useRef(new Map<string, string>());
   const completedTranscriptionItemsRef = useRef(new Set<string>());
@@ -385,7 +351,6 @@ export function MeetingRecorder() {
     observedEntriesRef.current = entries;
     if (
       !entriesChanged ||
-      entries[0]?.id.startsWith("preview") ||
       mode === null ||
       (mode !== "topics" && mode !== "actions")
     ) {
@@ -394,13 +359,6 @@ export function MeetingRecorder() {
     const timer = window.setTimeout(() => runAnalysis(mode, "", entries), 1600);
     return () => window.clearTimeout(timer);
   }, [entries, mode, runAnalysis]);
-
-  const stopSpeechCommitLoop = useCallback(() => {
-    if (speechCommitTimerRef.current !== null) {
-      window.clearInterval(speechCommitTimerRef.current);
-      speechCommitTimerRef.current = null;
-    }
-  }, []);
 
   const handleRealtimeEvent = useCallback((event: MessageEvent<string>) => {
     try {
@@ -489,33 +447,10 @@ export function MeetingRecorder() {
           createParagraph();
         }
         if (message.item_id) registerItem(message.item_id);
-        if (speechCommitTimerRef.current === null) {
-          speechCommitTimerRef.current = window.setInterval(() => {
-            const channel = dataChannelRef.current;
-            const paragraphId = activeParagraphIdRef.current;
-            if (
-              sessionStateRef.current !== "recording" ||
-              channel?.readyState !== "open" ||
-              !paragraphId
-            ) {
-              return;
-            }
-            try {
-              channel.send(JSON.stringify({
-                type: "input_audio_buffer.commit",
-                event_id: `commit-${crypto.randomUUID()}`,
-              }));
-              pendingCommitParagraphsRef.current.push(paragraphId);
-            } catch {
-              // The next interval retries while speech remains active.
-            }
-          }, LIVE_COMMIT_INTERVAL_MS);
-        }
         return;
       }
 
       if (message.type === "input_audio_buffer.speech_stopped") {
-        stopSpeechCommitLoop();
         if (message.item_id) registerItem(message.item_id);
         const audioEndMs = message.audio_end_ms ?? elapsedRef.current * 1000;
         lastSpeechEndMsRef.current = Math.max(
@@ -526,9 +461,7 @@ export function MeetingRecorder() {
       }
 
       if (message.type === "input_audio_buffer.committed" && message.item_id) {
-        const paragraphId =
-          pendingCommitParagraphsRef.current.shift() ?? activeParagraph();
-        registerItem(message.item_id, paragraphId);
+        registerItem(message.item_id);
         return;
       }
 
@@ -567,7 +500,7 @@ export function MeetingRecorder() {
     } catch {
       // Ignore non-JSON WebRTC control events.
     }
-  }, [stopSpeechCommitLoop]);
+  }, []);
 
   const connectRealtime = useCallback(
     async (stream: MediaStream) => {
@@ -623,10 +556,8 @@ export function MeetingRecorder() {
 
       setEntries([]);
       processedTranscriptionEventsRef.current.clear();
-      stopSpeechCommitLoop();
       lastSpeechEndMsRef.current = null;
       activeParagraphIdRef.current = null;
-      pendingCommitParagraphsRef.current = [];
       transcriptionItemParagraphRef.current.clear();
       transcriptionItemTextRef.current.clear();
       completedTranscriptionItemsRef.current.clear();
@@ -665,7 +596,6 @@ export function MeetingRecorder() {
       track.enabled = false;
     });
     pausedAtRef.current = Date.now();
-    stopSpeechCommitLoop();
     setSessionState("paused");
   };
 
@@ -682,7 +612,6 @@ export function MeetingRecorder() {
   };
 
   const stopRecording = () => {
-    stopSpeechCommitLoop();
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
@@ -698,11 +627,10 @@ export function MeetingRecorder() {
 
   useEffect(() => {
     return () => {
-      stopSpeechCommitLoop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       peerRef.current?.close();
     };
-  }, [stopSpeechCommitLoop]);
+  }, []);
 
   const saveNote = (event: FormEvent) => {
     event.preventDefault();
@@ -896,7 +824,6 @@ export function MeetingRecorder() {
                 <p className="eyebrow">What was said</p>
                 <h2 id="transcript-title">Live transcript</h2>
               </div>
-              {entries[0]?.id.startsWith("preview") && <span className="preview-badge">Preview content</span>}
             </div>
 
             <div
@@ -909,14 +836,7 @@ export function MeetingRecorder() {
                   panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
               }}
             >
-              {!entries.length && (
-                <div className="empty-state">
-                  <span className="empty-rings" />
-                  <h3>Listening for the conversation</h3>
-                  <p>Speech and timestamped notes will appear here in real time.</p>
-                </div>
-              )}
-              {entries.map((entry, index) => (
+              {entries.map((entry) => (
                 <article
                   className={`transcript-entry ${entry.kind}${entry.draft ? " draft" : ""}`}
                   key={entry.id}
@@ -930,10 +850,7 @@ export function MeetingRecorder() {
                   <div className="transcript-copy">
                     {entry.kind === "note" && <h3>Meeting note</h3>}
                     <p>
-                      <TypewriterText
-                        text={entry.text}
-                        startDelay={entry.id.startsWith("preview") ? index * 180 : 0}
-                      />
+                      <TypewriterText text={entry.text} />
                     </p>
                   </div>
                 </article>
