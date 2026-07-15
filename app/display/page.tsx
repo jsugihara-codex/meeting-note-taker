@@ -62,7 +62,10 @@ export default function MetaDisplay() {
       }
     };
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") syncFromStorage();
+      if (document.visibilityState === "visible") {
+        syncFromStorage();
+        announceReady();
+      }
     };
     const onMessage = (event: MessageEvent) => {
       if (
@@ -73,24 +76,35 @@ export default function MetaDisplay() {
         applyMeta(event.data.payload as MetaState);
       }
     };
+    const announceReady = () => {
+      try {
+        window.opener?.postMessage(
+          { type: "meeting-room-meta-display-ready" },
+          window.location.origin,
+        );
+      } catch {
+        // Broadcast and storage sync remain available without an opener.
+      }
+    };
+    const onFocus = () => {
+      syncFromStorage();
+      announceReady();
+    };
+    const readySyncs = [0, 150, 600, 1500].map((delay) =>
+      window.setTimeout(announceReady, delay),
+    );
+
     window.addEventListener("storage", onStorage);
-    window.addEventListener("focus", syncFromStorage);
+    window.addEventListener("focus", onFocus);
     window.addEventListener("message", onMessage);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    try {
-      window.opener?.postMessage(
-        { type: "meeting-room-meta-display-ready" },
-        window.location.origin,
-      );
-    } catch {
-      // Broadcast and storage sync remain available without an opener.
-    }
     return () => {
       window.clearTimeout(initialSync);
       window.clearInterval(storageSync);
+      readySyncs.forEach((timer) => window.clearTimeout(timer));
       channel?.close();
       window.removeEventListener("storage", onStorage);
-      window.removeEventListener("focus", syncFromStorage);
+      window.removeEventListener("focus", onFocus);
       window.removeEventListener("message", onMessage);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };

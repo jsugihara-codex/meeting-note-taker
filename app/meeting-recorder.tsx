@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  FormEvent,
+  MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 type SessionState = "idle" | "connecting" | "recording" | "paused" | "stopped";
 type InsightMode = "topics" | "actions" | "chat" | "summary";
@@ -28,6 +35,7 @@ const CHANNEL_NAME = "meeting-room-meta-display";
 const STORAGE_KEY = "meeting-room-meta-state-v2";
 const PARAGRAPH_BREAK_MS = 800;
 const SERVER_VAD_SILENCE_MS = 250;
+const META_DISPLAY_SYNC_DELAYS_MS = [0, 150, 600, 1500];
 
 function appendTranscriptChunk(current: string, incoming: string) {
   const base = current.replace(/\s+/g, " ").trim();
@@ -96,7 +104,7 @@ function TypewriterText({ text, startDelay = 0 }: { text: string; startDelay?: n
   useEffect(() => {
     if (!isReady) return;
     let nextText: string;
-    let delay = 18;
+    let delay = 14;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       nextText = text;
       delay = 0;
@@ -105,7 +113,11 @@ function TypewriterText({ text, startDelay = 0 }: { text: string; startDelay?: n
       delay = 0;
     } else {
       if (visibleText.length >= text.length) return;
-      nextText = text.slice(0, visibleText.length + 1);
+      const remaining = text.length - visibleText.length;
+      const charactersPerTick =
+        remaining > 160 ? 12 : remaining > 80 ? 8 : remaining > 32 ? 4 : remaining > 12 ? 2 : 1;
+      nextText = text.slice(0, visibleText.length + charactersPerTick);
+      delay = remaining > 32 ? 8 : remaining > 12 ? 10 : 14;
     }
     const timer = window.setTimeout(
       () => setVisibleText(nextText),
@@ -175,6 +187,8 @@ export function MeetingRecorder() {
   const metaChannelRef = useRef<BroadcastChannel | null>(null);
   const metaDisplayWindowRef = useRef<Window | null>(null);
   const latestMetaRef = useRef<MetaState | null>(null);
+  const latestMetaUpdatedAtRef = useRef(0);
+  const metaSyncTimeoutsRef = useRef<number[]>([]);
   const startedAtRef = useRef(0);
   const pausedAtRef = useRef(0);
   const pausedDurationRef = useRef(0);
@@ -234,6 +248,13 @@ export function MeetingRecorder() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      metaSyncTimeoutsRef.current.forEach((timer) => window.clearTimeout(timer));
+      metaSyncTimeoutsRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
     if (!transcriptAutoScrollRef.current) return;
     const panel = transcriptListRef.current;
     if (!panel) return;
@@ -265,9 +286,10 @@ export function MeetingRecorder() {
         title: modeTitle(nextMode),
         content: nextContent,
         isThinking: nextIsThinking,
-        updatedAt: Date.now(),
+        updatedAt: Math.max(Date.now(), latestMetaUpdatedAtRef.current + 1),
         meetingStatus: sessionStateRef.current,
       };
+      latestMetaUpdatedAtRef.current = payload.updatedAt;
       latestMetaRef.current = payload;
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -287,6 +309,36 @@ export function MeetingRecorder() {
       } catch {
         metaDisplayWindowRef.current = null;
       }
+    },
+    [],
+  );
+
+  const openMetaDisplay = useCallback(
+    (event: ReactMouseEvent<HTMLAnchorElement>) => {
+      const displayWindow = window.open(
+        event.currentTarget.href,
+        "meeting-room-meta-display",
+      );
+      if (!displayWindow) return;
+
+      event.preventDefault();
+      metaDisplayWindowRef.current = displayWindow;
+      metaSyncTimeoutsRef.current.forEach((timer) => window.clearTimeout(timer));
+      metaSyncTimeoutsRef.current = META_DISPLAY_SYNC_DELAYS_MS.map((delay) =>
+        window.setTimeout(() => {
+          const latest = latestMetaRef.current;
+          const target = metaDisplayWindowRef.current;
+          if (!latest || !target || target.closed) return;
+          try {
+            target.postMessage(
+              { type: "meeting-room-meta-state", payload: latest },
+              window.location.origin,
+            );
+          } catch {
+            metaDisplayWindowRef.current = null;
+          }
+        }, delay),
+      );
     },
     [],
   );
@@ -704,6 +756,7 @@ export function MeetingRecorder() {
           href="/display"
           target="meeting-room-meta-display"
           rel="opener"
+          onClick={openMetaDisplay}
         >
           Open Meta Display <span aria-hidden="true">↗</span>
         </a>
@@ -948,6 +1001,7 @@ export function MeetingRecorder() {
               href="/display"
               target="meeting-room-meta-display"
               rel="opener"
+              onClick={openMetaDisplay}
             >
               Present on Meta Display <span aria-hidden="true">↗</span>
             </a>
