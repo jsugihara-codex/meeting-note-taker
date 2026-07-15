@@ -32,7 +32,7 @@ type MetaState = {
 };
 
 const META_DISPLAY_WINDOW_NAME = "meeting-room-meta-display";
-const AUDIO_COMMIT_INTERVAL_MS = 1500;
+const AUDIO_COMMIT_INTERVAL_MS = 1750;
 const TRANSCRIPTION_PROMPT_LEAKS = [
   "context transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
   "transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
@@ -966,7 +966,13 @@ export function MeetingRecorder() {
                   <div className="transcript-copy">
                     {entry.kind === "note" && <h3>Meeting note</h3>}
                     <p>
-                      <TypewriterText text={entry.text} />
+                      <TypewriterText
+                        text={
+                          entry.kind === "speech"
+                            ? entry.text.toLocaleUpperCase("en-US")
+                            : entry.text
+                        }
+                      />
                     </p>
                   </div>
                 </article>
