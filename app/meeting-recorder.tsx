@@ -12,15 +12,8 @@ type TranscriptEntry = {
   speaker: string;
   text: string;
   kind: "speech" | "note";
+  draft?: boolean;
 };
-
-function speakerName(label?: string) {
-  if (!label) return "Speaker";
-  const numbered = label.match(/^spk[_ -]?(\d+)$/i);
-  if (numbered) return `Speaker ${numbered[1]}`;
-  if (/^[a-z]$/i.test(label)) return `Speaker ${label.toUpperCase()}`;
-  return label;
-}
 
 type MetaState = {
   mode: DisplayMode;
@@ -180,9 +173,11 @@ export function MeetingRecorder() {
   const sessionStateRef = useRef<SessionState>(sessionState);
   const observedEntriesRef = useRef(entries);
   const analysisRequestRef = useRef(0);
+  const transcriptListRef = useRef<HTMLDivElement | null>(null);
+  const transcriptAutoScrollRef = useRef(true);
   const processedTranscriptionEventsRef = useRef(new Set<string>());
+  const transcriptionDraftsRef = useRef(new Map<string, string>());
   const transcriptionStartedAtRef = useRef(new Map<string, number>());
-  const segmentedTranscriptionItemsRef = useRef(new Set<string>());
 
   useEffect(() => {
     elapsedRef.current = elapsed;
@@ -191,6 +186,16 @@ export function MeetingRecorder() {
   useEffect(() => {
     sessionStateRef.current = sessionState;
   }, [sessionState]);
+
+  useEffect(() => {
+    if (!transcriptAutoScrollRef.current) return;
+    const panel = transcriptListRef.current;
+    if (!panel) return;
+    const frame = window.requestAnimationFrame(() => {
+      panel.scrollTop = panel.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [entries]);
 
   useEffect(() => {
     if (sessionState !== "recording") return;
@@ -305,58 +310,48 @@ export function MeetingRecorder() {
         type?: string;
         event_id?: string;
         item_id?: string;
-        id?: string;
-        speaker?: string;
-        start?: number;
         delta?: string;
-        text?: string;
         transcript?: string;
         error?: { message?: string };
       };
       if (message.type === "conversation.item.input_audio_transcription.delta") {
-        if (message.item_id && !transcriptionStartedAtRef.current.has(message.item_id)) {
-          transcriptionStartedAtRef.current.set(message.item_id, elapsedRef.current);
-        }
-      }
-      if (
-        message.type === "conversation.item.input_audio_transcription.segment" &&
-        message.item_id &&
-        message.id &&
-        message.text?.trim()
-      ) {
         if (
-          message.event_id &&
-          processedTranscriptionEventsRef.current.has(message.event_id)
+          !message.item_id ||
+          !message.delta ||
+          (message.event_id && processedTranscriptionEventsRef.current.has(message.event_id))
         ) {
           return;
         }
         if (message.event_id) {
           processedTranscriptionEventsRef.current.add(message.event_id);
         }
+        if (!transcriptionStartedAtRef.current.has(message.item_id)) {
+          transcriptionStartedAtRef.current.set(message.item_id, elapsedRef.current);
+        }
 
-        segmentedTranscriptionItemsRef.current.add(message.item_id);
-        const startedAt =
-          transcriptionStartedAtRef.current.get(message.item_id) ?? elapsedRef.current;
-        const segmentTime = Math.max(0, startedAt + Math.floor(message.start ?? 0));
-        const entry: TranscriptEntry = {
-          id: `segment-${message.id}`,
-          time: segmentTime,
-          speaker: speakerName(message.speaker),
-          text: message.text.trim(),
-          kind: "speech",
-        };
+        const entryId = `transcript-${message.item_id}`;
+        const nextText =
+          (transcriptionDraftsRef.current.get(message.item_id) ?? "") + message.delta;
+        transcriptionDraftsRef.current.set(message.item_id, nextText);
+        const startedAt = transcriptionStartedAtRef.current.get(message.item_id) ?? elapsedRef.current;
 
         setEntries((current) => {
-          const existingIndex = current.findIndex((item) => item.id === entry.id);
-          if (existingIndex === -1) return [...current, entry];
-          if (
-            current[existingIndex].text === entry.text &&
-            current[existingIndex].speaker === entry.speaker
-          ) {
-            return current;
+          const existingIndex = current.findIndex((entry) => entry.id === entryId);
+          if (existingIndex === -1) {
+            return [
+              ...current,
+              {
+                id: entryId,
+                time: startedAt,
+                speaker: "Transcript",
+                text: nextText,
+                kind: "speech",
+                draft: true,
+              },
+            ];
           }
           const next = [...current];
-          next[existingIndex] = entry;
+          next[existingIndex] = { ...next[existingIndex], text: nextText, draft: true };
           return next;
         });
       }
@@ -375,12 +370,6 @@ export function MeetingRecorder() {
           processedTranscriptionEventsRef.current.add(message.event_id);
         }
 
-        if (segmentedTranscriptionItemsRef.current.has(message.item_id)) {
-          transcriptionStartedAtRef.current.delete(message.item_id);
-          segmentedTranscriptionItemsRef.current.delete(message.item_id);
-          return;
-        }
-
         const text = message.transcript.trim();
         const entryId = `transcript-${message.item_id}`;
         const startedAt =
@@ -394,7 +383,7 @@ export function MeetingRecorder() {
               {
                 id: entryId,
                 time: startedAt,
-                speaker: "Speaker",
+                speaker: "Transcript",
                 text,
                 kind: "speech",
               },
@@ -402,10 +391,11 @@ export function MeetingRecorder() {
           }
           if (current[existingIndex].text === text) return current;
           const next = [...current];
-          next[existingIndex] = { ...next[existingIndex], text };
+          next[existingIndex] = { ...next[existingIndex], text, draft: false };
           return next;
         });
 
+        transcriptionDraftsRef.current.delete(message.item_id);
         transcriptionStartedAtRef.current.delete(message.item_id);
       }
       if (message.type === "error") {
@@ -470,8 +460,8 @@ export function MeetingRecorder() {
 
       setEntries([]);
       processedTranscriptionEventsRef.current.clear();
+      transcriptionDraftsRef.current.clear();
       transcriptionStartedAtRef.current.clear();
-      segmentedTranscriptionItemsRef.current.clear();
       analysisRequestRef.current += 1;
       setIsThinking(false);
       setInsight("");
@@ -736,7 +726,16 @@ export function MeetingRecorder() {
               {entries[0]?.id.startsWith("preview") && <span className="preview-badge">Preview content</span>}
             </div>
 
-            <div className="transcript-list" aria-live="polite">
+            <div
+              className="transcript-list"
+              aria-live="polite"
+              ref={transcriptListRef}
+              onScroll={(event) => {
+                const panel = event.currentTarget;
+                transcriptAutoScrollRef.current =
+                  panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
+              }}
+            >
               {!entries.length && (
                 <div className="empty-state">
                   <span className="empty-rings" />
@@ -744,29 +743,28 @@ export function MeetingRecorder() {
                   <p>Speech and timestamped notes will appear here in real time.</p>
                 </div>
               )}
-              {entries.map((entry, index) => {
-                const previousSpeech = entries
-                  .slice(0, index)
-                  .reverse()
-                  .find((item) => item.kind === "speech");
-                const showTimestamp =
-                  entry.kind === "note" || previousSpeech?.speaker !== entry.speaker;
-                return (
-                  <article className={`transcript-entry ${entry.kind}`} key={entry.id}>
-                    <time>{showTimestamp ? formatTime(entry.time) : ""}</time>
-                    <div className="speaker-avatar">{entry.kind === "note" ? "✦" : entry.speaker.charAt(0)}</div>
-                    <div>
-                      <h3>{entry.kind === "note" ? "Meeting note" : entry.speaker}</h3>
-                      <p>
-                        <TypewriterText
-                          text={entry.text}
-                          startDelay={entry.id.startsWith("preview") ? index * 180 : 0}
-                        />
-                      </p>
-                    </div>
-                  </article>
-                );
-              })}
+              {entries.map((entry, index) => (
+                <article
+                  className={`transcript-entry ${entry.kind}${entry.draft ? " draft" : ""}`}
+                  key={entry.id}
+                >
+                  {entry.kind === "note" && (
+                    <>
+                      <time>{formatTime(entry.time)}</time>
+                      <div className="speaker-avatar">✦</div>
+                    </>
+                  )}
+                  <div className="transcript-copy">
+                    {entry.kind === "note" && <h3>Meeting note</h3>}
+                    <p>
+                      <TypewriterText
+                        text={entry.text}
+                        startDelay={entry.id.startsWith("preview") ? index * 180 : 0}
+                      />
+                    </p>
+                  </div>
+                </article>
+              ))}
             </div>
           </section>
         </section>

@@ -491,7 +491,10 @@ button {
 }
 
 .transcript-card {
+  height: 480px;
   margin-top: 18px;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
@@ -523,7 +526,11 @@ button {
 }
 
 .transcript-list {
+  flex: 1;
   min-height: 290px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 10px 26px 17px;
 }
 
@@ -536,6 +543,11 @@ button {
 }
 
 .transcript-entry:last-child { border-bottom: 0; }
+
+.transcript-entry.speech {
+  display: block;
+  padding: 15px 0;
+}
 
 .transcript-entry > time {
   padding-top: 4px;
@@ -596,14 +608,13 @@ button {
   49%, 100% { opacity: 0; }
 }
 
-.transcript-entry.note > div:last-child {
+.transcript-entry.note .transcript-copy {
   padding: 10px 12px;
   border-radius: 9px;
   background: #f7f6fe;
 }
 
 .transcript-entry.note h3 { color: #5d54bd; }
-.transcript-entry.draft { opacity: 0.68; }
 
 .empty-state {
   min-height: 268px;
@@ -1129,6 +1140,7 @@ button {
   .note-composer { margin-top: 14px; padding: 14px; }
 
   .section-heading { padding: 20px 17px 16px; }
+  .transcript-card { height: 390px; }
   .transcript-list { padding: 7px 17px 12px; }
   .transcript-entry {
     grid-template-columns: 31px minmax(0, 1fr);
