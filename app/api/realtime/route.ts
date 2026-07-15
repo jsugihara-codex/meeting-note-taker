@@ -23,10 +23,8 @@ export async function POST(request: Request) {
       input: {
         noise_reduction: { type: "far_field" },
         transcription: {
-          model: "gpt-4o-mini-transcribe",
+          model: "gpt-4o-transcribe-diarize",
           language: "en",
-          prompt:
-            "Transcribe a business meeting accurately. Preserve names, acronyms, commitments, dates, and decisions.",
         },
         turn_detection: {
           type: "server_vad",

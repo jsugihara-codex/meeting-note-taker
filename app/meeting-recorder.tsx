@@ -14,6 +14,14 @@ type TranscriptEntry = {
   kind: "speech" | "note";
 };
 
+function speakerName(label?: string) {
+  if (!label) return "Speaker";
+  const numbered = label.match(/^spk[_ -]?(\d+)$/i);
+  if (numbered) return `Speaker ${numbered[1]}`;
+  if (/^[a-z]$/i.test(label)) return `Speaker ${label.toUpperCase()}`;
+  return label;
+}
+
 type MetaState = {
   mode: DisplayMode;
   title: string;
@@ -94,7 +102,7 @@ function TypewriterText({ text, startDelay = 0 }: { text: string; startDelay?: n
       nextText = text;
       delay = 0;
     } else if (!text.startsWith(visibleText)) {
-      nextText = "";
+      nextText = text;
       delay = 0;
     } else {
       if (visibleText.length >= text.length) return;
@@ -150,7 +158,6 @@ export function MeetingRecorder() {
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [elapsed, setElapsed] = useState(0);
   const [entries, setEntries] = useState<TranscriptEntry[]>(previewTranscript);
-  const [liveDraft, setLiveDraft] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState("");
   const [mode, setMode] = useState<InsightMode | null>(null);
@@ -173,6 +180,9 @@ export function MeetingRecorder() {
   const sessionStateRef = useRef<SessionState>(sessionState);
   const observedEntriesRef = useRef(entries);
   const analysisRequestRef = useRef(0);
+  const processedTranscriptionEventsRef = useRef(new Set<string>());
+  const transcriptionStartedAtRef = useRef(new Map<string, number>());
+  const segmentedTranscriptionItemsRef = useRef(new Set<string>());
 
   useEffect(() => {
     elapsedRef.current = elapsed;
@@ -293,29 +303,110 @@ export function MeetingRecorder() {
     try {
       const message = JSON.parse(event.data) as {
         type?: string;
+        event_id?: string;
+        item_id?: string;
+        id?: string;
+        speaker?: string;
+        start?: number;
         delta?: string;
+        text?: string;
         transcript?: string;
         error?: { message?: string };
       };
       if (message.type === "conversation.item.input_audio_transcription.delta") {
-        setLiveDraft((current) => current + (message.delta ?? ""));
+        if (message.item_id && !transcriptionStartedAtRef.current.has(message.item_id)) {
+          transcriptionStartedAtRef.current.set(message.item_id, elapsedRef.current);
+        }
+      }
+      if (
+        message.type === "conversation.item.input_audio_transcription.segment" &&
+        message.item_id &&
+        message.id &&
+        message.text?.trim()
+      ) {
+        if (
+          message.event_id &&
+          processedTranscriptionEventsRef.current.has(message.event_id)
+        ) {
+          return;
+        }
+        if (message.event_id) {
+          processedTranscriptionEventsRef.current.add(message.event_id);
+        }
+
+        segmentedTranscriptionItemsRef.current.add(message.item_id);
+        const startedAt =
+          transcriptionStartedAtRef.current.get(message.item_id) ?? elapsedRef.current;
+        const segmentTime = Math.max(0, startedAt + Math.floor(message.start ?? 0));
+        const entry: TranscriptEntry = {
+          id: `segment-${message.id}`,
+          time: segmentTime,
+          speaker: speakerName(message.speaker),
+          text: message.text.trim(),
+          kind: "speech",
+        };
+
+        setEntries((current) => {
+          const existingIndex = current.findIndex((item) => item.id === entry.id);
+          if (existingIndex === -1) return [...current, entry];
+          if (
+            current[existingIndex].text === entry.text &&
+            current[existingIndex].speaker === entry.speaker
+          ) {
+            return current;
+          }
+          const next = [...current];
+          next[existingIndex] = entry;
+          return next;
+        });
       }
       if (
         message.type === "conversation.item.input_audio_transcription.completed" &&
+        message.item_id &&
         message.transcript?.trim()
       ) {
+        if (
+          message.event_id &&
+          processedTranscriptionEventsRef.current.has(message.event_id)
+        ) {
+          return;
+        }
+        if (message.event_id) {
+          processedTranscriptionEventsRef.current.add(message.event_id);
+        }
+
+        if (segmentedTranscriptionItemsRef.current.has(message.item_id)) {
+          transcriptionStartedAtRef.current.delete(message.item_id);
+          segmentedTranscriptionItemsRef.current.delete(message.item_id);
+          return;
+        }
+
         const text = message.transcript.trim();
-        setEntries((current) => [
-          ...current,
-          {
-            id: crypto.randomUUID(),
-            time: elapsedRef.current,
-            speaker: "Speaker",
-            text,
-            kind: "speech",
-          },
-        ]);
-        setLiveDraft("");
+        const entryId = `transcript-${message.item_id}`;
+        const startedAt =
+          transcriptionStartedAtRef.current.get(message.item_id) ?? elapsedRef.current;
+
+        setEntries((current) => {
+          const existingIndex = current.findIndex((entry) => entry.id === entryId);
+          if (existingIndex === -1) {
+            return [
+              ...current,
+              {
+                id: entryId,
+                time: startedAt,
+                speaker: "Speaker",
+                text,
+                kind: "speech",
+              },
+            ];
+          }
+          if (current[existingIndex].text === text) return current;
+          const next = [...current];
+          next[existingIndex] = { ...next[existingIndex], text };
+          return next;
+        });
+
+        transcriptionStartedAtRef.current.delete(message.item_id);
       }
       if (message.type === "error") {
         setError(message.error?.message ?? "Live transcription had a recoverable error.");
@@ -378,6 +469,9 @@ export function MeetingRecorder() {
       recorder.start(1000);
 
       setEntries([]);
+      processedTranscriptionEventsRef.current.clear();
+      transcriptionStartedAtRef.current.clear();
+      segmentedTranscriptionItemsRef.current.clear();
       analysisRequestRef.current += 1;
       setIsThinking(false);
       setInsight("");
@@ -437,7 +531,6 @@ export function MeetingRecorder() {
     recorderRef.current = null;
     dataChannelRef.current = null;
     peerRef.current = null;
-    setLiveDraft("");
     setSessionState("stopped");
   };
 
@@ -644,38 +737,36 @@ export function MeetingRecorder() {
             </div>
 
             <div className="transcript-list" aria-live="polite">
-              {!entries.length && !liveDraft && (
+              {!entries.length && (
                 <div className="empty-state">
                   <span className="empty-rings" />
                   <h3>Listening for the conversation</h3>
                   <p>Speech and timestamped notes will appear here in real time.</p>
                 </div>
               )}
-              {entries.map((entry, index) => (
-                <article className={`transcript-entry ${entry.kind}`} key={entry.id}>
-                  <time>{formatTime(entry.time)}</time>
-                  <div className="speaker-avatar">{entry.kind === "note" ? "✦" : entry.speaker.charAt(0)}</div>
-                  <div>
-                    <h3>{entry.kind === "note" ? "Meeting note" : entry.speaker}</h3>
-                    <p>
-                      <TypewriterText
-                        text={entry.text}
-                        startDelay={entry.id.startsWith("preview") ? index * 180 : 0}
-                      />
-                    </p>
-                  </div>
-                </article>
-              ))}
-              {liveDraft && (
-                <article className="transcript-entry draft">
-                  <time>{formatTime(elapsed)}</time>
-                  <div className="speaker-avatar">S</div>
-                  <div>
-                    <h3>Speaker <span>transcribing</span></h3>
-                    <p><TypewriterText text={liveDraft} /></p>
-                  </div>
-                </article>
-              )}
+              {entries.map((entry, index) => {
+                const previousSpeech = entries
+                  .slice(0, index)
+                  .reverse()
+                  .find((item) => item.kind === "speech");
+                const showTimestamp =
+                  entry.kind === "note" || previousSpeech?.speaker !== entry.speaker;
+                return (
+                  <article className={`transcript-entry ${entry.kind}`} key={entry.id}>
+                    <time>{showTimestamp ? formatTime(entry.time) : ""}</time>
+                    <div className="speaker-avatar">{entry.kind === "note" ? "✦" : entry.speaker.charAt(0)}</div>
+                    <div>
+                      <h3>{entry.kind === "note" ? "Meeting note" : entry.speaker}</h3>
+                      <p>
+                        <TypewriterText
+                          text={entry.text}
+                          startDelay={entry.id.startsWith("preview") ? index * 180 : 0}
+                        />
+                      </p>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           </section>
         </section>
