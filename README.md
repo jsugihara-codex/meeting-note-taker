@@ -11,6 +11,7 @@ Requirements:
 
 - Node.js 22 or later
 - An OpenAI API key
+- An Upstash Redis database for sharing Meta Display state across browsers
 
 ```bash
 cp .env.example .env.local
@@ -25,20 +26,36 @@ secure HTTPS deployments.
 
 ```text
 OPENAI_API_KEY=your_openai_api_key
+UPSTASH_REDIS_REST_URL=your_upstash_redis_rest_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_rest_token
 ```
 
 The key is read only by server routes. It is never exposed to browser code.
+When recording starts, the server creates a short-lived Realtime client secret;
+the browser then streams a cloned microphone track directly to OpenAI over
+WebRTC. Vercel relays the session setup but does not proxy or store meeting
+audio.
+The Redis REST credentials remain server-side and store only the latest Meta
+Display state, which expires after six hours. Local development can use an
+in-memory fallback, but Vercel requires Redis so an independently opened Meta
+Display receives reliable updates.
 
 ## Deploy to Vercel
 
 1. Import this repository into Vercel.
 2. Keep the detected framework preset as **Next.js**.
-3. Add `OPENAI_API_KEY` as a secret environment variable for Production,
+3. Add an Upstash Redis database from the Vercel Marketplace or attach an
+   existing Upstash database.
+4. Add `OPENAI_API_KEY`, `UPSTASH_REDIS_REST_URL`, and
+   `UPSTASH_REDIS_REST_TOKEN` as secret environment variables for Production,
    Preview, and Development.
-4. Deploy.
+5. Deploy.
 
 Vercel uses `npm run build` and serves the Next.js application without a custom
-adapter. The separate Meta Display is available at `/display`.
+adapter. The separate Meta Display is available at the stable `/display` URL.
+It polls the shared state relay every 300ms, so action buttons immediately show
+the thinking indicator and then the generated response without opening or
+refreshing the display page.
 
 ## Useful commands
 

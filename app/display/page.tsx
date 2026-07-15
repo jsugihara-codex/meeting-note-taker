@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type MetaState = {
+  sequence: number;
   mode: "idle" | "topics" | "actions" | "chat" | "summary";
   title: string;
   content: string;
@@ -11,10 +12,8 @@ type MetaState = {
   meetingStatus: "idle" | "connecting" | "recording" | "paused" | "stopped";
 };
 
-const CHANNEL_NAME = "meeting-room-meta-display";
-const STORAGE_KEY = "meeting-room-meta-state-v2";
-
 const fallback: MetaState = {
+  sequence: -1,
   mode: "idle",
   title: "Meeting intelligence",
   content: "",
@@ -23,104 +22,201 @@ const fallback: MetaState = {
   meetingStatus: "idle",
 };
 
+function cleanDisplayLines(content: string) {
+  return content
+    .split("\n")
+    .map((line) => line.replace(/^[-•*]\s*/, "").replace(/\*\*/g, "").trim())
+    .filter(Boolean);
+}
+
+function compatibleLine(current: string, next: string) {
+  return current === next || current.startsWith(next) || next.startsWith(current);
+}
+
+function isHeadingLine(line: string) {
+  return /^(Outcome|Key decisions|Next steps|Notes):?$/i.test(line);
+}
+
 export default function MetaDisplay() {
   const [meta, setMeta] = useState<MetaState>(fallback);
+  const [now, setNow] = useState(() => Date.now());
+  const [relayAvailable, setRelayAvailable] = useState(true);
+  const [targetLines, setTargetLines] = useState<string[]>([]);
+  const [typedLines, setTypedLines] = useState<string[]>([]);
+  const lastSequenceRef = useRef(-1);
+  const targetLinesRef = useRef<string[]>([]);
+  const typedLinesRef = useRef<string[]>([]);
+  const renderedModeRef = useRef<MetaState["mode"]>("idle");
+  const typingTimerRef = useRef<number | null>(null);
+  const displayContentRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const applyMeta = (next: MetaState) => {
-      setMeta((current) =>
-        next.updatedAt >= current.updatedAt ? next : current,
-      );
+      if (next.sequence <= lastSequenceRef.current) return;
+      lastSequenceRef.current = next.sequence;
+      setMeta(next);
     };
-
-    const syncFromStorage = () => {
+    let serverSyncInFlight = false;
+    let failures = 0;
+    const syncFromServer = async () => {
+      if (serverSyncInFlight) return;
+      serverSyncInFlight = true;
       try {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        if (stored) applyMeta(JSON.parse(stored) as MetaState);
-      } catch {
-        // Keep the preview content when storage is restricted.
-      }
-    };
-
-    const initialSync = window.setTimeout(syncFromStorage, 0);
-    const storageSync = window.setInterval(syncFromStorage, 750);
-
-    const channel = "BroadcastChannel" in window
-      ? new BroadcastChannel(CHANNEL_NAME)
-      : null;
-    if (channel) {
-      channel.onmessage = (event: MessageEvent<MetaState>) => applyMeta(event.data);
-    }
-
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === STORAGE_KEY && event.newValue) {
-        try {
-          applyMeta(JSON.parse(event.newValue) as MetaState);
-        } catch {
-          // The next polling cycle will retry the durable stored state.
+        const response = await fetch(
+          `/api/meta-state?after=${lastSequenceRef.current}`,
+          { cache: "no-store" },
+        );
+        if (response.status === 204) {
+          failures = 0;
+          setRelayAvailable(true);
+          return;
         }
+        if (!response.ok) throw new Error("Meta Display relay unavailable");
+        const result = (await response.json()) as { state?: MetaState | null };
+        if (result.state) applyMeta(result.state);
+        failures = 0;
+        setRelayAvailable(true);
+      } catch {
+        failures += 1;
+        if (failures > 4) setRelayAvailable(false);
+      } finally {
+        serverSyncInFlight = false;
       }
     };
+    void syncFromServer();
+    const serverSync = window.setInterval(() => void syncFromServer(), 300);
+    const clock = window.setInterval(() => setNow(Date.now()), 2000);
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        syncFromStorage();
-        announceReady();
-      }
-    };
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return;
-      if (
-        event.data?.type === "meeting-room-meta-refresh" &&
-        event.data.refreshId
-      ) {
-        const refreshId = String(event.data.refreshId);
-        const nextUrl = new URL(window.location.href);
-        if (nextUrl.searchParams.get("refresh") !== refreshId) {
-          nextUrl.searchParams.set("refresh", refreshId);
-          nextUrl.searchParams.set("mode", event.data.mode ?? "idle");
-          window.location.replace(nextUrl.toString());
-        }
-        return;
-      }
-      if (event.data?.type === "meeting-room-meta-state" && event.data.payload) {
-        applyMeta(event.data.payload as MetaState);
-      }
-    };
-    const announceReady = () => {
-      try {
-        window.opener?.postMessage(
-          { type: "meeting-room-meta-display-ready" },
-          window.location.origin,
-        );
-      } catch {
-        // Broadcast and storage sync remain available without an opener.
+        void syncFromServer();
       }
     };
     const onFocus = () => {
-      syncFromStorage();
-      announceReady();
+      void syncFromServer();
     };
-    const readySyncs = [0, 150, 600, 1500].map((delay) =>
-      window.setTimeout(announceReady, delay),
-    );
 
-    window.addEventListener("storage", onStorage);
     window.addEventListener("focus", onFocus);
-    window.addEventListener("message", onMessage);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      window.clearTimeout(initialSync);
-      window.clearInterval(storageSync);
-      readySyncs.forEach((timer) => window.clearTimeout(timer));
-      channel?.close();
-      window.removeEventListener("storage", onStorage);
+      window.clearInterval(serverSync);
+      window.clearInterval(clock);
       window.removeEventListener("focus", onFocus);
-      window.removeEventListener("message", onMessage);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 
-  const isLive = meta.meetingStatus === "recording";
+  useEffect(() => {
+    if (typingTimerRef.current !== null) {
+      window.clearInterval(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+
+    const nextLines = meta.isThinking ? [] : cleanDisplayLines(meta.content);
+    const modeChanged = renderedModeRef.current !== meta.mode;
+    renderedModeRef.current = meta.mode;
+
+    let targets = [...targetLinesRef.current];
+    let typed = [...typedLinesRef.current];
+
+    if (!nextLines.length) {
+      targets = [];
+      typed = [];
+    } else if (modeChanged) {
+      targets = [...nextLines];
+      typed = nextLines.map(() => "");
+    } else {
+      if (targets.length && !compatibleLine(targets[0], nextLines[0])) {
+        const overlapIndex = targets.findIndex((line) =>
+          compatibleLine(line, nextLines[0]),
+        );
+        if (overlapIndex > 0) {
+          targets = targets.slice(overlapIndex);
+          typed = typed.slice(overlapIndex);
+        } else {
+          targets = [];
+          typed = [];
+        }
+      }
+
+      nextLines.forEach((next, index) => {
+        if (index >= targets.length) {
+          targets.push(next);
+          typed.push("");
+          return;
+        }
+
+        const current = targets[index];
+        if (next.startsWith(current)) {
+          targets[index] = next;
+        } else if (current.startsWith(next)) {
+          targets[index] = next;
+          typed[index] = typed[index].slice(0, next.length);
+        } else if (next !== current) {
+          targets[index] = next;
+          typed[index] = "";
+        }
+      });
+      targets = targets.slice(0, nextLines.length);
+      typed = typed.slice(0, nextLines.length);
+    }
+
+    targetLinesRef.current = targets;
+    typedLinesRef.current = typed;
+    setTargetLines([...targets]);
+
+    if (
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      typedLinesRef.current = [...targets];
+      setTypedLines([...targets]);
+      return;
+    }
+
+    setTypedLines([...typed]);
+    if (!targets.some((line, index) => typed[index]?.length < line.length)) {
+      return;
+    }
+
+    typingTimerRef.current = window.setInterval(() => {
+      const targetLines = targetLinesRef.current;
+      const currentLines = [...typedLinesRef.current];
+      const lineIndex = currentLines.findIndex(
+        (line, index) => line.length < targetLines[index].length,
+      );
+      if (lineIndex < 0) {
+        if (typingTimerRef.current !== null) {
+          window.clearInterval(typingTimerRef.current);
+          typingTimerRef.current = null;
+        }
+        return;
+      }
+
+      currentLines[lineIndex] +=
+        targetLines[lineIndex][currentLines[lineIndex].length];
+      typedLinesRef.current = currentLines;
+      setTypedLines(currentLines);
+    }, 28);
+
+    return () => {
+      if (typingTimerRef.current !== null) {
+        window.clearInterval(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+    };
+  }, [meta.content, meta.isThinking, meta.mode]);
+
+  useEffect(() => {
+    const panel = displayContentRef.current;
+    if (!panel) return;
+    const frame = window.requestAnimationFrame(() => {
+      panel.scrollTop = panel.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [typedLines]);
+
+  const recorderIsConnected = relayAvailable && now - meta.updatedAt < 8_000;
+  const isLive = meta.meetingStatus === "recording" && recorderIsConnected;
 
   return (
     <main className={`display-shell mode-${meta.mode}`}>
@@ -131,22 +227,27 @@ export default function MetaDisplay() {
         </div>
         <div className="display-status">
           <span className={isLive ? "live" : ""} />
-          {isLive
+          {!relayAvailable
+            ? "Reconnecting"
+            : isLive
             ? "Live meeting"
-            : meta.meetingStatus === "paused"
+            : meta.meetingStatus === "paused" && recorderIsConnected
               ? "Meeting paused"
-              : meta.meetingStatus === "stopped"
+              : meta.meetingStatus === "stopped" && recorderIsConnected
                 ? "Meeting complete"
                 : "Display ready"}
         </div>
       </header>
 
-      <section className="display-content" aria-live="polite">
+      <section
+        ref={displayContentRef}
+        className="display-content"
+        aria-live="polite"
+      >
         <div className="display-kicker">
           <span>{meta.mode === "chat" ? "Answer from the meeting" : "Meeting intelligence"}</span>
           <i />
         </div>
-        <h1>{meta.title}</h1>
         <div className="display-rule" />
         {meta.isThinking ? (
           <div className="display-thinking-indicator" role="status" aria-live="polite">
@@ -161,15 +262,19 @@ export default function MetaDisplay() {
           </div>
         ) : (
           <div className="display-lines">
-            {meta.content.split("\n").filter(Boolean).map((line, index) => {
-              const clean = line.replace(/^[-•*]\s*/, "").replace(/\*\*/g, "");
-              const isHeading = /^(Outcome|Key decisions|Next steps|Notes):?$/i.test(clean);
-              return isHeading ? (
-                <h2 key={`${line}-${index}`}>{clean.replace(/:$/, "")}</h2>
+            {typedLines.map((line, index) => {
+              const target = targetLines[index] ?? line;
+              return isHeadingLine(target) ? (
+                <h2
+                  key={`${meta.mode}-${index}`}
+                  aria-label={target.replace(/:$/, "")}
+                >
+                  {line.replace(/:$/, "")}
+                </h2>
               ) : (
-                <article key={`${line}-${index}`}>
+                <article key={`${meta.mode}-${index}`}>
                   {meta.mode !== "chat" && <span>{String(index + 1).padStart(2, "0")}</span>}
-                  <p>{clean}</p>
+                  <p aria-label={target}>{line}</p>
                 </article>
               );
             })}

@@ -907,7 +907,7 @@ button {
 /* Meta Display */
 .display-shell {
   min-height: 100vh;
-  padding: clamp(26px, 4vw, 60px) clamp(28px, 6vw, 100px) 32px;
+  padding: clamp(18px, 2.5vw, 36px) clamp(28px, 6vw, 100px) 26px;
   display: grid;
   grid-template-rows: auto 1fr auto;
   overflow: hidden;
@@ -952,9 +952,17 @@ button {
 
 .display-content {
   width: min(1320px, 100%);
-  margin: auto 0;
-  padding: clamp(55px, 9vh, 115px) 0 clamp(42px, 6vh, 80px);
+  min-height: 0;
+  max-height: 100%;
+  align-self: start;
+  margin: 0;
+  padding: clamp(18px, 3vh, 36px) 0 clamp(24px, 4vh, 50px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
+
+.display-content::-webkit-scrollbar { display: none; }
 
 .display-kicker {
   display: flex;
@@ -965,21 +973,13 @@ button {
   font-weight: 760;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+  margin-bottom: clamp(18px, 3vh, 30px);
 }
 
 .display-kicker i {
   width: min(140px, 14vw);
   height: 1px;
   background: #29684f;
-}
-
-.display-content h1 {
-  max-width: 1100px;
-  margin: 20px 0 25px;
-  font-size: clamp(48px, 7vw, 112px);
-  font-weight: 540;
-  letter-spacing: -0.06em;
-  line-height: 0.94;
 }
 
 .display-rule {
@@ -993,6 +993,11 @@ button {
   max-width: 1200px;
   display: grid;
   gap: clamp(14px, 2.2vh, 28px);
+}
+
+.display-lines article,
+.display-lines h2 {
+  animation: display-line-rise 180ms ease-out;
 }
 
 .display-empty-state {
@@ -1089,6 +1094,11 @@ button {
   70%, 100% { box-shadow: 0 0 0 8px rgba(238, 117, 104, 0); }
 }
 
+@keyframes display-line-rise {
+  from { opacity: 0.2; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @media (max-width: 1020px) {
   .workspace {
     max-width: 780px;
@@ -1163,8 +1173,7 @@ button {
 
   .display-brand .brand-mark { width: 28px; height: 28px; }
   .display-status { font-size: 10px; }
-  .display-content { padding: 60px 0 45px; }
-  .display-content h1 { margin-top: 16px; font-size: clamp(45px, 15vw, 72px); }
+  .display-content { padding: 22px 0 32px; }
   .display-lines article { grid-template-columns: 29px minmax(0, 1fr); gap: 10px; }
   .display-lines p { font-size: 20px; }
   .mode-chat .display-lines p { font-size: 27px; }

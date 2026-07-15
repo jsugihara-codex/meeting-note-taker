@@ -22,6 +22,7 @@ type TranscriptEntry = {
 };
 
 type MetaState = {
+  sequence: number;
   mode: DisplayMode;
   title: string;
   content: string;
@@ -30,12 +31,8 @@ type MetaState = {
   meetingStatus: SessionState;
 };
 
-const CHANNEL_NAME = "meeting-room-meta-display";
-const STORAGE_KEY = "meeting-room-meta-state-v2";
 const META_DISPLAY_WINDOW_NAME = "meeting-room-meta-display";
 const PARAGRAPH_BREAK_MS = 800;
-const SERVER_VAD_SILENCE_MS = 250;
-const META_DISPLAY_SYNC_DELAYS_MS = [0, 150, 600, 1500];
 const TRANSCRIPTION_PROMPT_LEAKS = [
   "context transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
   "transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
@@ -203,11 +200,9 @@ export function MeetingRecorder() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
-  const metaChannelRef = useRef<BroadcastChannel | null>(null);
-  const metaDisplayWindowRef = useRef<Window | null>(null);
-  const latestMetaRef = useRef<MetaState | null>(null);
-  const latestMetaUpdatedAtRef = useRef(0);
-  const metaSyncTimeoutsRef = useRef<number[]>([]);
+  const outboundMicrophoneTrackRef = useRef<MediaStreamTrack | null>(null);
+  const metaSequenceRef = useRef(0);
+  const metaPublishChainRef = useRef(Promise.resolve());
   const startedAtRef = useRef(0);
   const pausedAtRef = useRef(0);
   const pausedDurationRef = useRef(0);
@@ -218,13 +213,13 @@ export function MeetingRecorder() {
   const transcriptListRef = useRef<HTMLDivElement | null>(null);
   const transcriptAutoScrollRef = useRef(true);
   const processedTranscriptionEventsRef = useRef(new Set<string>());
-  const lastSpeechEndMsRef = useRef<number | null>(null);
   const activeParagraphIdRef = useRef<string | null>(null);
   const transcriptionItemParagraphRef = useRef(new Map<string, string>());
   const transcriptionItemTextRef = useRef(new Map<string, string>());
   const completedTranscriptionItemsRef = useRef(new Set<string>());
   const paragraphItemIdsRef = useRef(new Map<string, string[]>());
   const paragraphStartedAtRef = useRef(new Map<string, number>());
+  const lastSpeechEndMsRef = useRef<number | null>(null);
 
   useEffect(() => {
     elapsedRef.current = elapsed;
@@ -233,45 +228,6 @@ export function MeetingRecorder() {
   useEffect(() => {
     sessionStateRef.current = sessionState;
   }, [sessionState]);
-
-  useEffect(() => {
-    if (!("BroadcastChannel" in window)) return;
-    const channel = new BroadcastChannel(CHANNEL_NAME);
-    metaChannelRef.current = channel;
-    return () => {
-      channel.close();
-      metaChannelRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (
-        event.origin !== window.location.origin ||
-        event.data?.type !== "meeting-room-meta-display-ready" ||
-        !event.source
-      ) {
-        return;
-      }
-      metaDisplayWindowRef.current = event.source as Window;
-      const latest = latestMetaRef.current;
-      if (latest) {
-        metaDisplayWindowRef.current.postMessage(
-          { type: "meeting-room-meta-state", payload: latest },
-          window.location.origin,
-        );
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      metaSyncTimeoutsRef.current.forEach((timer) => window.clearTimeout(timer));
-      metaSyncTimeoutsRef.current = [];
-    };
-  }, []);
 
   useEffect(() => {
     if (!transcriptAutoScrollRef.current) return;
@@ -299,93 +255,68 @@ export function MeetingRecorder() {
       nextMode: InsightMode | null,
       nextContent: string,
       nextIsThinking: boolean,
-    ) => {
+    ): Promise<void> => {
+      metaSequenceRef.current = Math.max(
+        Date.now(),
+        metaSequenceRef.current + 1,
+      );
       const payload: MetaState = {
+        sequence: metaSequenceRef.current,
         mode: nextMode ?? "idle",
         title: modeTitle(nextMode),
         content: nextContent,
         isThinking: nextIsThinking,
-        updatedAt: Math.max(Date.now(), latestMetaUpdatedAtRef.current + 1),
+        updatedAt: Date.now(),
         meetingStatus: sessionStateRef.current,
       };
-      latestMetaUpdatedAtRef.current = payload.updatedAt;
-      latestMetaRef.current = payload;
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-      } catch {
-        // The embedded preview can restrict cross-tab storage.
-      }
-      try {
-        metaChannelRef.current?.postMessage(payload);
-      } catch {
-        // Storage polling keeps an open display synchronized as a fallback.
-      }
-      try {
-        metaDisplayWindowRef.current?.postMessage(
-          { type: "meeting-room-meta-state", payload },
-          window.location.origin,
-        );
-      } catch {
-        metaDisplayWindowRef.current = null;
-      }
+      metaPublishChainRef.current = metaPublishChainRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const response = await fetch("/api/meta-state", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            keepalive: true,
+          });
+          if (!response.ok) {
+            throw new Error("The Meta Display relay is unavailable.");
+          }
+          const result = (await response.json()) as {
+            state?: { sequence?: number };
+          };
+          if (Number.isSafeInteger(result.state?.sequence)) {
+            metaSequenceRef.current = Math.max(
+              metaSequenceRef.current,
+              Number(result.state?.sequence),
+            );
+          }
+        })
+        .catch(() => undefined);
+      return metaPublishChainRef.current;
     },
     [],
-  );
-
-  const scheduleMetaDisplaySync = useCallback((displayWindow: Window) => {
-    metaDisplayWindowRef.current = displayWindow;
-    metaSyncTimeoutsRef.current.forEach((timer) => window.clearTimeout(timer));
-    metaSyncTimeoutsRef.current = META_DISPLAY_SYNC_DELAYS_MS.map((delay) =>
-      window.setTimeout(() => {
-        const latest = latestMetaRef.current;
-        const target = metaDisplayWindowRef.current;
-        if (!latest || !target || target.closed) return;
-        try {
-          target.postMessage(
-            { type: "meeting-room-meta-state", payload: latest },
-            window.location.origin,
-          );
-        } catch {
-          metaDisplayWindowRef.current = null;
-        }
-      }, delay),
-    );
-  }, []);
-
-  const refreshMetaDisplay = useCallback(
-    (nextMode: InsightMode | null) => {
-      const refreshId = Date.now();
-      const currentDisplay = metaDisplayWindowRef.current;
-      if (currentDisplay && !currentDisplay.closed) {
-        try {
-          currentDisplay.postMessage(
-            {
-              type: "meeting-room-meta-refresh",
-              refreshId,
-              mode: nextMode ?? "idle",
-            },
-            window.location.origin,
-          );
-        } catch {
-          metaDisplayWindowRef.current = null;
-        }
-      }
-
-      const displayUrl = new URL("/display", window.location.href);
-      displayUrl.searchParams.set("refresh", String(refreshId));
-      displayUrl.searchParams.set("mode", nextMode ?? "idle");
-      const displayWindow = window.open(
-        displayUrl.toString(),
-        META_DISPLAY_WINDOW_NAME,
-      );
-      if (displayWindow) scheduleMetaDisplaySync(displayWindow);
-    },
-    [scheduleMetaDisplaySync],
   );
 
   useEffect(() => {
     publishMeta(mode, insight, isThinking);
   }, [insight, isThinking, mode, publishMeta, sessionState]);
+
+  useEffect(() => {
+    if (sessionState !== "recording" && sessionState !== "paused") return;
+    const heartbeat = window.setInterval(
+      () => publishMeta(mode, insight, isThinking),
+      2000,
+    );
+    return () => window.clearInterval(heartbeat);
+  }, [insight, isThinking, mode, publishMeta, sessionState]);
+
+  const createTranscriptParagraph = useCallback(() => {
+    const paragraphId = crypto.randomUUID();
+    activeParagraphIdRef.current = paragraphId;
+    paragraphStartedAtRef.current.set(paragraphId, elapsedRef.current);
+    paragraphItemIdsRef.current.set(paragraphId, []);
+    return paragraphId;
+  }, []);
 
   const transcriptForAnalysis = useCallback((source = entries) => {
     return source
@@ -475,13 +406,7 @@ export function MeetingRecorder() {
         processedTranscriptionEventsRef.current.add(message.event_id);
       }
 
-      const createParagraph = () => {
-        const paragraphId = crypto.randomUUID();
-        activeParagraphIdRef.current = paragraphId;
-        paragraphStartedAtRef.current.set(paragraphId, elapsedRef.current);
-        paragraphItemIdsRef.current.set(paragraphId, []);
-        return paragraphId;
-      };
+      const createParagraph = createTranscriptParagraph;
       const activeParagraph = () =>
         activeParagraphIdRef.current ?? createParagraph();
       const registerItem = (itemId: string, paragraphId = activeParagraph()) => {
@@ -542,23 +467,22 @@ export function MeetingRecorder() {
 
       if (message.type === "input_audio_buffer.speech_started") {
         const audioStartMs = message.audio_start_ms ?? elapsedRef.current * 1000;
-        const gapMs = lastSpeechEndMsRef.current === null
-          ? 0
-          : audioStartMs - lastSpeechEndMsRef.current;
-        if (!activeParagraphIdRef.current || gapMs > PARAGRAPH_BREAK_MS) {
-          createParagraph();
-        }
-        if (message.item_id) registerItem(message.item_id);
+        const gapMs =
+          lastSpeechEndMsRef.current === null
+            ? 0
+            : audioStartMs - lastSpeechEndMsRef.current;
+        const paragraphId =
+          !activeParagraphIdRef.current || gapMs > PARAGRAPH_BREAK_MS
+            ? createParagraph()
+            : activeParagraph();
+        if (message.item_id) registerItem(message.item_id, paragraphId);
         return;
       }
 
       if (message.type === "input_audio_buffer.speech_stopped") {
         if (message.item_id) registerItem(message.item_id);
-        const audioEndMs = message.audio_end_ms ?? elapsedRef.current * 1000;
-        lastSpeechEndMsRef.current = Math.max(
-          0,
-          audioEndMs - SERVER_VAD_SILENCE_MS,
-        );
+        lastSpeechEndMsRef.current =
+          message.audio_end_ms ?? elapsedRef.current * 1000;
         return;
       }
 
@@ -602,39 +526,95 @@ export function MeetingRecorder() {
     } catch {
       // Ignore non-JSON WebRTC control events.
     }
-  }, []);
+  }, [createTranscriptParagraph]);
 
   const connectRealtime = useCallback(
     async (stream: MediaStream) => {
+      const tokenResponse = await fetch("/api/realtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const tokenData = (await tokenResponse.json()) as {
+        value?: string;
+        client_secret?: { value?: string };
+        error?: { message?: string } | string;
+      };
+      const clientSecret = tokenData.value ?? tokenData.client_secret?.value;
+      if (!tokenResponse.ok || !clientSecret) {
+        const tokenError =
+          typeof tokenData.error === "string"
+            ? tokenData.error
+            : tokenData.error?.message;
+        throw new Error(tokenError ?? "Live transcription could not connect.");
+      }
+
       const peer = new RTCPeerConnection();
       peerRef.current = peer;
-      stream.getAudioTracks().forEach((track) => peer.addTrack(track, stream));
+      const sourceTrack = stream.getAudioTracks()[0];
+      if (!sourceTrack) {
+        peer.close();
+        peerRef.current = null;
+        throw new Error("No microphone track is available.");
+      }
+      const outboundTrack = sourceTrack.clone();
+      outboundMicrophoneTrackRef.current = outboundTrack;
+      peer.addTrack(outboundTrack, new MediaStream([outboundTrack]));
+      peer.onconnectionstatechange = () => {
+        if (sessionStateRef.current !== "recording") return;
+        if (
+          peer.connectionState === "failed" ||
+          peer.connectionState === "disconnected"
+        ) {
+          setConnection("device");
+          setError("Recording continues on this device. Live transcription disconnected.");
+        }
+      };
 
       const channel = peer.createDataChannel("oai-events");
       dataChannelRef.current = channel;
       channel.onmessage = handleRealtimeEvent;
       channel.onopen = () => setConnection("live");
 
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      const response = await fetch("/api/realtime", {
-        method: "POST",
-        headers: { "Content-Type": "application/sdp" },
-        body: peer.localDescription?.sdp ?? offer.sdp,
-      });
+      try {
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        const response = await fetch("https://api.openai.com/v1/realtime/calls", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${clientSecret}`,
+            "Content-Type": "application/sdp",
+          },
+          body: peer.localDescription?.sdp ?? offer.sdp,
+        });
 
-      if (!response.ok) {
-        let message = "Live transcription could not connect.";
-        try {
-          const result = (await response.json()) as { error?: string };
-          message = result.error ?? message;
-        } catch {
-          // Keep the fallback when the server did not return JSON.
+        if (!response.ok) {
+          let message = "Live transcription could not connect.";
+          try {
+            const result = (await response.json()) as {
+              error?: { message?: string } | string;
+            };
+            message =
+              typeof result.error === "string"
+                ? result.error
+                : result.error?.message ?? message;
+          } catch {
+            // Keep the fallback when the server did not return JSON.
+          }
+          throw new Error(message);
         }
-        throw new Error(message);
+        const answerSdp = await response.text();
+        await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      } catch (issue) {
+        channel.close();
+        peer.close();
+        outboundTrack.stop();
+        if (dataChannelRef.current === channel) dataChannelRef.current = null;
+        if (peerRef.current === peer) peerRef.current = null;
+        if (outboundMicrophoneTrackRef.current === outboundTrack) {
+          outboundMicrophoneTrackRef.current = null;
+        }
+        throw issue;
       }
-      const answerSdp = await response.text();
-      await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
     },
     [handleRealtimeEvent],
   );
@@ -658,8 +638,8 @@ export function MeetingRecorder() {
 
       setEntries([]);
       processedTranscriptionEventsRef.current.clear();
-      lastSpeechEndMsRef.current = null;
       activeParagraphIdRef.current = null;
+      lastSpeechEndMsRef.current = null;
       transcriptionItemParagraphRef.current.clear();
       transcriptionItemTextRef.current.clear();
       completedTranscriptionItemsRef.current.clear();
@@ -697,6 +677,9 @@ export function MeetingRecorder() {
     streamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = false;
     });
+    if (outboundMicrophoneTrackRef.current) {
+      outboundMicrophoneTrackRef.current.enabled = false;
+    }
     pausedAtRef.current = Date.now();
     setSessionState("paused");
   };
@@ -707,6 +690,9 @@ export function MeetingRecorder() {
     streamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = true;
     });
+    if (outboundMicrophoneTrackRef.current) {
+      outboundMicrophoneTrackRef.current.enabled = true;
+    }
     pausedDurationRef.current += Date.now() - pausedAtRef.current;
     startedAtRef.current =
       Date.now() - elapsedRef.current * 1000 - pausedDurationRef.current;
@@ -717,19 +703,31 @@ export function MeetingRecorder() {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
+    if (outboundMicrophoneTrackRef.current) {
+      outboundMicrophoneTrackRef.current.enabled = false;
+    }
     streamRef.current?.getTracks().forEach((track) => track.stop());
-    dataChannelRef.current?.close();
-    peerRef.current?.close();
+    const channel = dataChannelRef.current;
+    const peer = peerRef.current;
+    const outboundTrack = outboundMicrophoneTrackRef.current;
+    window.setTimeout(() => {
+      channel?.close();
+      peer?.close();
+      outboundTrack?.stop();
+    }, 500);
     streamRef.current = null;
     recorderRef.current = null;
     dataChannelRef.current = null;
     peerRef.current = null;
+    outboundMicrophoneTrackRef.current = null;
     setSessionState("stopped");
   };
 
   useEffect(() => {
     return () => {
       streamRef.current?.getTracks().forEach((track) => track.stop());
+      outboundMicrophoneTrackRef.current?.stop();
+      dataChannelRef.current?.close();
       peerRef.current?.close();
     };
   }, []);
@@ -773,7 +771,6 @@ export function MeetingRecorder() {
     const text = question.trim();
     if (!text) return;
     runAnalysis("chat", text);
-    refreshMetaDisplay("chat");
   };
 
   const statusLabel =
@@ -979,7 +976,6 @@ export function MeetingRecorder() {
               aria-selected={mode === "topics"}
               onClick={() => {
                 runAnalysis("topics");
-                refreshMetaDisplay("topics");
               }}
             >
               <span aria-hidden="true">⌁</span> Key Topics
@@ -991,7 +987,6 @@ export function MeetingRecorder() {
               aria-selected={mode === "actions"}
               onClick={() => {
                 runAnalysis("actions");
-                refreshMetaDisplay("actions");
               }}
             >
               <span aria-hidden="true">✓</span> Action Items
@@ -1008,7 +1003,6 @@ export function MeetingRecorder() {
                 const prompt = "Ask a question about anything discussed in the meeting.";
                 setInsight(prompt);
                 publishMeta("chat", prompt, false);
-                refreshMetaDisplay("chat");
               }}
             >
               <span aria-hidden="true">◇</span> Chat
@@ -1056,7 +1050,6 @@ export function MeetingRecorder() {
                 type="button"
                 onClick={() => {
                   runAnalysis("summary");
-                  refreshMetaDisplay("summary");
                 }}
               >
                 Generate meeting summary
