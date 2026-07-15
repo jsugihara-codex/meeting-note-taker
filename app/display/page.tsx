@@ -68,11 +68,21 @@ export default function MetaDisplay() {
       }
     };
     const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
       if (
-        event.origin === window.location.origin &&
-        event.data?.type === "meeting-room-meta-state" &&
-        event.data.payload
+        event.data?.type === "meeting-room-meta-refresh" &&
+        event.data.refreshId
       ) {
+        const refreshId = String(event.data.refreshId);
+        const nextUrl = new URL(window.location.href);
+        if (nextUrl.searchParams.get("refresh") !== refreshId) {
+          nextUrl.searchParams.set("refresh", refreshId);
+          nextUrl.searchParams.set("mode", event.data.mode ?? "idle");
+          window.location.replace(nextUrl.toString());
+        }
+        return;
+      }
+      if (event.data?.type === "meeting-room-meta-state" && event.data.payload) {
         applyMeta(event.data.payload as MetaState);
       }
     };

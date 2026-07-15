@@ -2,7 +2,6 @@
 
 import {
   FormEvent,
-  MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useRef,
@@ -33,9 +32,29 @@ type MetaState = {
 
 const CHANNEL_NAME = "meeting-room-meta-display";
 const STORAGE_KEY = "meeting-room-meta-state-v2";
+const META_DISPLAY_WINDOW_NAME = "meeting-room-meta-display";
 const PARAGRAPH_BREAK_MS = 800;
 const SERVER_VAD_SILENCE_MS = 250;
 const META_DISPLAY_SYNC_DELAYS_MS = [0, 150, 600, 1500];
+const TRANSCRIPTION_PROMPT_LEAKS = [
+  "context transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
+  "transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
+];
+
+function isTranscriptionPromptLeak(value: string) {
+  const normalized = value
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+  if (normalized.length < 4) return false;
+  return TRANSCRIPTION_PROMPT_LEAKS.some(
+    (prompt) =>
+      prompt.startsWith(normalized) ||
+      normalized.startsWith(prompt) ||
+      (normalized.includes("transcribe a business meeting accurately") &&
+        normalized.includes("preserve names acronyms commitments dates and decisions")),
+  );
+}
 
 function appendTranscriptChunk(current: string, incoming: string) {
   const base = current.replace(/\s+/g, " ").trim();
@@ -313,34 +332,55 @@ export function MeetingRecorder() {
     [],
   );
 
-  const openMetaDisplay = useCallback(
-    (event: ReactMouseEvent<HTMLAnchorElement>) => {
-      const displayWindow = window.open(
-        event.currentTarget.href,
-        "meeting-room-meta-display",
-      );
-      if (!displayWindow) return;
+  const scheduleMetaDisplaySync = useCallback((displayWindow: Window) => {
+    metaDisplayWindowRef.current = displayWindow;
+    metaSyncTimeoutsRef.current.forEach((timer) => window.clearTimeout(timer));
+    metaSyncTimeoutsRef.current = META_DISPLAY_SYNC_DELAYS_MS.map((delay) =>
+      window.setTimeout(() => {
+        const latest = latestMetaRef.current;
+        const target = metaDisplayWindowRef.current;
+        if (!latest || !target || target.closed) return;
+        try {
+          target.postMessage(
+            { type: "meeting-room-meta-state", payload: latest },
+            window.location.origin,
+          );
+        } catch {
+          metaDisplayWindowRef.current = null;
+        }
+      }, delay),
+    );
+  }, []);
 
-      event.preventDefault();
-      metaDisplayWindowRef.current = displayWindow;
-      metaSyncTimeoutsRef.current.forEach((timer) => window.clearTimeout(timer));
-      metaSyncTimeoutsRef.current = META_DISPLAY_SYNC_DELAYS_MS.map((delay) =>
-        window.setTimeout(() => {
-          const latest = latestMetaRef.current;
-          const target = metaDisplayWindowRef.current;
-          if (!latest || !target || target.closed) return;
-          try {
-            target.postMessage(
-              { type: "meeting-room-meta-state", payload: latest },
-              window.location.origin,
-            );
-          } catch {
-            metaDisplayWindowRef.current = null;
-          }
-        }, delay),
+  const refreshMetaDisplay = useCallback(
+    (nextMode: InsightMode | null) => {
+      const refreshId = Date.now();
+      const currentDisplay = metaDisplayWindowRef.current;
+      if (currentDisplay && !currentDisplay.closed) {
+        try {
+          currentDisplay.postMessage(
+            {
+              type: "meeting-room-meta-refresh",
+              refreshId,
+              mode: nextMode ?? "idle",
+            },
+            window.location.origin,
+          );
+        } catch {
+          metaDisplayWindowRef.current = null;
+        }
+      }
+
+      const displayUrl = new URL("/display", window.location.href);
+      displayUrl.searchParams.set("refresh", String(refreshId));
+      displayUrl.searchParams.set("mode", nextMode ?? "idle");
+      const displayWindow = window.open(
+        displayUrl.toString(),
+        META_DISPLAY_WINDOW_NAME,
       );
+      if (displayWindow) scheduleMetaDisplaySync(displayWindow);
     },
-    [],
+    [scheduleMetaDisplaySync],
   );
 
   useEffect(() => {
@@ -455,10 +495,20 @@ export function MeetingRecorder() {
       const updateParagraph = (paragraphId: string) => {
         const itemIds = paragraphItemIdsRef.current.get(paragraphId) ?? [];
         const text = mergeTranscriptChunks(
-          itemIds.map((itemId) => transcriptionItemTextRef.current.get(itemId) ?? ""),
+          itemIds.map((itemId) => {
+            const itemText = transcriptionItemTextRef.current.get(itemId) ?? "";
+            return isTranscriptionPromptLeak(itemText) ? "" : itemText;
+          }),
         );
-        if (!text) return;
         const entryId = `paragraph-${paragraphId}`;
+        if (!text) {
+          setEntries((current) =>
+            current.some((entry) => entry.id === entryId)
+              ? current.filter((entry) => entry.id !== entryId)
+              : current,
+          );
+          return;
+        }
         const startedAt = paragraphStartedAtRef.current.get(paragraphId) ?? elapsedRef.current;
         const draft = itemIds.some(
           (itemId) => !completedTranscriptionItemsRef.current.has(itemId),
@@ -723,6 +773,7 @@ export function MeetingRecorder() {
     const text = question.trim();
     if (!text) return;
     runAnalysis("chat", text);
+    refreshMetaDisplay("chat");
   };
 
   const statusLabel =
@@ -754,9 +805,8 @@ export function MeetingRecorder() {
         <a
           className="display-link"
           href="/display"
-          target="meeting-room-meta-display"
+          target={META_DISPLAY_WINDOW_NAME}
           rel="opener"
-          onClick={openMetaDisplay}
         >
           Open Meta Display <span aria-hidden="true">↗</span>
         </a>
@@ -927,7 +977,10 @@ export function MeetingRecorder() {
               type="button"
               role="tab"
               aria-selected={mode === "topics"}
-              onClick={() => runAnalysis("topics")}
+              onClick={() => {
+                runAnalysis("topics");
+                refreshMetaDisplay("topics");
+              }}
             >
               <span aria-hidden="true">⌁</span> Key Topics
             </button>
@@ -936,7 +989,10 @@ export function MeetingRecorder() {
               type="button"
               role="tab"
               aria-selected={mode === "actions"}
-              onClick={() => runAnalysis("actions")}
+              onClick={() => {
+                runAnalysis("actions");
+                refreshMetaDisplay("actions");
+              }}
             >
               <span aria-hidden="true">✓</span> Action Items
             </button>
@@ -949,7 +1005,10 @@ export function MeetingRecorder() {
                 analysisRequestRef.current += 1;
                 setIsThinking(false);
                 setMode("chat");
-                setInsight("Ask a question about anything discussed in the meeting.");
+                const prompt = "Ask a question about anything discussed in the meeting.";
+                setInsight(prompt);
+                publishMeta("chat", prompt, false);
+                refreshMetaDisplay("chat");
               }}
             >
               <span aria-hidden="true">◇</span> Chat
@@ -992,16 +1051,22 @@ export function MeetingRecorder() {
 
           <div className="panel-footer-actions">
             {sessionState === "stopped" && (
-              <button className="summary-button" type="button" onClick={() => runAnalysis("summary")}>
+              <button
+                className="summary-button"
+                type="button"
+                onClick={() => {
+                  runAnalysis("summary");
+                  refreshMetaDisplay("summary");
+                }}
+              >
                 Generate meeting summary
               </button>
             )}
             <a
               className="open-display-button"
               href="/display"
-              target="meeting-room-meta-display"
+              target={META_DISPLAY_WINDOW_NAME}
               rel="opener"
-              onClick={openMetaDisplay}
             >
               Present on Meta Display <span aria-hidden="true">↗</span>
             </a>
