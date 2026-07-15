@@ -58,7 +58,7 @@ export default function MetaDisplay() {
     <main className={`display-shell mode-${meta.mode}`}>
       <header className="display-header">
         <div className="display-brand">
-          <span className="brand-mark"><i /><i /><i /></span>
+          <span className="brand-mark" aria-hidden="true" />
           Meeting Room
         </div>
         <div className="display-status">

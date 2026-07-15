@@ -78,23 +78,11 @@ button {
 .brand-mark {
   width: 32px;
   height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
+  display: inline-block;
+  flex: 0 0 auto;
   border-radius: 10px;
-  background: var(--ink);
+  background: url("/favicon.svg") center / contain no-repeat;
 }
-
-.brand-mark i {
-  width: 3px;
-  border-radius: 3px;
-  background: #fff;
-}
-
-.brand-mark i:nth-child(1) { height: 9px; opacity: 0.75; }
-.brand-mark i:nth-child(2) { height: 17px; }
-.brand-mark i:nth-child(3) { height: 12px; opacity: 0.88; }
 
 .header-status {
   display: inline-flex;
@@ -928,8 +916,6 @@ button {
 }
 
 .display-brand { color: #f5f8f6; font-size: clamp(15px, 1.5vw, 20px); }
-.display-brand .brand-mark { background: #f5f8f6; }
-.display-brand .brand-mark i { background: #102018; }
 
 .display-status {
   display: inline-flex;

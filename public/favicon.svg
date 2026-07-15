@@ -1,6 +1,35 @@
-<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M22 19.2727C22 20.779 20.779 22 19.2727 22H14.7273C13.221 22 12 20.779 12 19.2727V12H19.2727C20.779 12 22 13.221 22 14.7273V19.2727Z" fill="#68C4FF"/>
-<path d="M20 2C21.1046 2 22 2.89543 22 4V7C22 8.10457 21.1046 9 20 9H17C15.8954 9 15 8.10457 15 7V4C15 2.89543 15.8954 2 17 2H20Z" fill="#0C79D8"/>
-<path d="M7 15C8.10457 15 9 15.8954 9 17V20C9 21.1046 8.10457 22 7 22H4C2.89543 22 2 21.1046 2 20V17C2 15.8954 2.89543 15 4 15H7Z" fill="#0C79D8"/>
-<path d="M12 12H4.72727C3.22104 12 2 10.779 2 9.27273V4.72727C2 3.22104 3.22104 2 4.72727 2H9.27273C10.779 2 12 3.22104 12 4.72727V12Z" fill="#2E9EFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Meeting Room</title>
+  <desc id="description">A meeting note with a live audio waveform and sparkle.</desc>
+  <defs>
+    <linearGradient id="tile" x1="88" y1="58" x2="424" y2="460" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111820"/>
+      <stop offset="1" stop-color="#080d12"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="142" y1="118" x2="358" y2="393" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#62f4bd"/>
+      <stop offset="1" stop-color="#43eaa5"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="488" height="488" rx="112" fill="url(#tile)"/>
+  <path
+    d="M177 94h135l97 97v158c0 42-34 76-76 76h-88l-50 47v-47h-18c-42 0-76-34-76-76V170c0-42 34-76 76-76Z"
+    fill="none"
+    stroke="#f8faf9"
+    stroke-width="28"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M312 96v58c0 29 24 53 53 53h41"
+    fill="none"
+    stroke="url(#mint)"
+    stroke-width="28"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <rect x="148" y="194" width="24" height="72" rx="12" fill="url(#mint)"/>
+  <rect x="204" y="156" width="24" height="148" rx="12" fill="url(#mint)"/>
+  <rect x="260" y="184" width="24" height="92" rx="12" fill="url(#mint)"/>
+  <path d="M326 284c8 28 25 45 53 53-28 8-45 25-53 53-8-28-25-45-53-53 28-8 45-25 53-53Z" fill="url(#mint)"/>
 </svg>

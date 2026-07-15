@@ -508,7 +508,7 @@ export function MeetingRecorder() {
     <main className="app-shell">
       <header className="app-header">
         <a className="brand" href="#top" aria-label="Meeting Room home">
-          <span className="brand-mark"><i /><i /><i /></span>
+          <span className="brand-mark" aria-hidden="true" />
           <span>Meeting Room</span>
         </a>
         <div className="header-status">
