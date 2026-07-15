@@ -6,7 +6,7 @@ const realtimeSession = {
       transcription: {
         model: "gpt-realtime-whisper",
         language: "en",
-        delay: "minimal",
+        delay: "low",
       },
       turn_detection: null,
     },

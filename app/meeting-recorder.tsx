@@ -32,7 +32,7 @@ type MetaState = {
 };
 
 const META_DISPLAY_WINDOW_NAME = "meeting-room-meta-display";
-const AUDIO_COMMIT_INTERVAL_MS = 500;
+const AUDIO_COMMIT_INTERVAL_MS = 1500;
 const TRANSCRIPTION_PROMPT_LEAKS = [
   "context transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
   "transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
