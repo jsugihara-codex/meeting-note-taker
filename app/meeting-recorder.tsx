@@ -9,7 +9,7 @@ import {
 } from "react";
 
 type SessionState = "idle" | "connecting" | "recording" | "paused" | "stopped";
-type InsightMode = "topics" | "actions" | "chat" | "summary";
+type InsightMode = "chat";
 type DisplayMode = InsightMode | "idle";
 
 type TranscriptEntry = {
@@ -32,7 +32,7 @@ type MetaState = {
 };
 
 const META_DISPLAY_WINDOW_NAME = "meeting-room-meta-display";
-const PARAGRAPH_BREAK_MS = 800;
+const AUDIO_COMMIT_INTERVAL_MS = 500;
 const TRANSCRIPTION_PROMPT_LEAKS = [
   "context transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
   "transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
@@ -98,51 +98,65 @@ function formatTime(seconds: number, includeHours = false) {
 }
 
 function modeTitle(mode: InsightMode | null) {
-  if (!mode) return "Select an action";
-  return {
-    topics: "Key topics",
-    actions: "Action items",
-    chat: "Meeting answer",
-    summary: "Meeting summary",
-  }[mode];
+  return mode ? "Meeting answer" : "Transcript chat";
 }
 
-function TypewriterText({ text, startDelay = 0 }: { text: string; startDelay?: number }) {
+function TypewriterText({ text }: { text: string }) {
   const [visibleText, setVisibleText] = useState("");
-  const [isReady, setIsReady] = useState(startDelay === 0);
+  const visibleTextRef = useRef("");
+  const targetTextRef = useRef(text);
+  const typingFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (startDelay === 0) return;
-    const timer = window.setTimeout(() => setIsReady(true), startDelay);
-    return () => window.clearTimeout(timer);
-  }, [startDelay]);
+    targetTextRef.current = text;
+    if (typingFrameRef.current !== null) return;
 
-  useEffect(() => {
-    if (!isReady) return;
-    let nextText: string;
-    let delay = 14;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      nextText = text;
-      delay = 0;
-    } else if (!text.startsWith(visibleText)) {
-      nextText = text;
-      delay = 0;
-    } else {
-      if (visibleText.length >= text.length) return;
-      const remaining = text.length - visibleText.length;
-      const charactersPerTick =
-        remaining > 160 ? 12 : remaining > 80 ? 8 : remaining > 32 ? 4 : remaining > 12 ? 2 : 1;
-      nextText = text.slice(0, visibleText.length + charactersPerTick);
-      delay = remaining > 32 ? 8 : remaining > 12 ? 10 : 14;
-    }
-    const timer = window.setTimeout(
-      () => setVisibleText(nextText),
-      delay,
-    );
-    return () => window.clearTimeout(timer);
-  }, [isReady, text, visibleText]);
+    const typeNextCharacter = () => {
+      const target = targetTextRef.current;
+      const current = visibleTextRef.current;
+      let next = current;
 
-  const isTyping = isReady && visibleText.length < text.length;
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        next = target;
+      } else if (!target.startsWith(current)) {
+        let sharedPrefixLength = 0;
+        const maxPrefixLength = Math.min(current.length, target.length);
+        while (
+          sharedPrefixLength < maxPrefixLength &&
+          current[sharedPrefixLength] === target[sharedPrefixLength]
+        ) {
+          sharedPrefixLength += 1;
+        }
+        next = target.slice(0, sharedPrefixLength);
+      } else if (current.length < target.length) {
+        next = target.slice(0, current.length + 1);
+      }
+
+      if (next !== current) {
+        visibleTextRef.current = next;
+        setVisibleText(next);
+      }
+
+      if (next !== target) {
+        typingFrameRef.current = window.requestAnimationFrame(typeNextCharacter);
+      } else {
+        typingFrameRef.current = null;
+      }
+    };
+
+    typingFrameRef.current = window.requestAnimationFrame(typeNextCharacter);
+  }, [text]);
+
+  useEffect(
+    () => () => {
+      if (typingFrameRef.current !== null) {
+        window.cancelAnimationFrame(typingFrameRef.current);
+      }
+    },
+    [],
+  );
+
+  const isTyping = visibleText !== text;
   return (
     <span className="typewriter-text" aria-label={text}>
       <span aria-hidden="true">{visibleText}</span>
@@ -187,7 +201,7 @@ export function MeetingRecorder() {
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState("");
-  const [mode, setMode] = useState<InsightMode | null>(null);
+  const [mode, setMode] = useState<InsightMode | null>("chat");
   const [insight, setInsight] = useState("");
   const [question, setQuestion] = useState("");
   const [isThinking, setIsThinking] = useState(false);
@@ -201,6 +215,8 @@ export function MeetingRecorder() {
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const outboundMicrophoneTrackRef = useRef<MediaStreamTrack | null>(null);
+  const audioCommitTimerRef = useRef<number | null>(null);
+  const lastAudioCommitAtRef = useRef(0);
   const metaSequenceRef = useRef(0);
   const metaPublishChainRef = useRef(Promise.resolve());
   const startedAtRef = useRef(0);
@@ -208,7 +224,6 @@ export function MeetingRecorder() {
   const pausedDurationRef = useRef(0);
   const elapsedRef = useRef(0);
   const sessionStateRef = useRef<SessionState>(sessionState);
-  const observedEntriesRef = useRef(entries);
   const analysisRequestRef = useRef(0);
   const transcriptListRef = useRef<HTMLDivElement | null>(null);
   const transcriptAutoScrollRef = useRef(true);
@@ -219,7 +234,6 @@ export function MeetingRecorder() {
   const completedTranscriptionItemsRef = useRef(new Set<string>());
   const paragraphItemIdsRef = useRef(new Map<string, string[]>());
   const paragraphStartedAtRef = useRef(new Map<string, number>());
-  const lastSpeechEndMsRef = useRef<number | null>(null);
 
   useEffect(() => {
     elapsedRef.current = elapsed;
@@ -354,10 +368,7 @@ export function MeetingRecorder() {
         }
       } catch {
         if (requestId === analysisRequestRef.current) {
-          const message =
-            nextMode === "chat"
-              ? "An answer could not be generated. Please try again."
-              : `${modeTitle(nextMode)} could not be generated. Please try again.`;
+          const message = "An answer could not be generated. Please try again.";
           setInsight(message);
           setIsThinking(false);
           publishMeta(nextMode, message, false);
@@ -369,20 +380,6 @@ export function MeetingRecorder() {
     [entries, publishMeta, transcriptForAnalysis],
   );
 
-  useEffect(() => {
-    const entriesChanged = observedEntriesRef.current !== entries;
-    observedEntriesRef.current = entries;
-    if (
-      !entriesChanged ||
-      mode === null ||
-      (mode !== "topics" && mode !== "actions")
-    ) {
-      return;
-    }
-    const timer = window.setTimeout(() => runAnalysis(mode, "", entries), 1600);
-    return () => window.clearTimeout(timer);
-  }, [entries, mode, runAnalysis]);
-
   const handleRealtimeEvent = useCallback((event: MessageEvent<string>) => {
     try {
       const message = JSON.parse(event.data) as {
@@ -393,7 +390,7 @@ export function MeetingRecorder() {
         audio_end_ms?: number;
         delta?: string;
         transcript?: string;
-        error?: { message?: string };
+        error?: { code?: string; message?: string };
       };
 
       if (
@@ -465,27 +462,6 @@ export function MeetingRecorder() {
         });
       };
 
-      if (message.type === "input_audio_buffer.speech_started") {
-        const audioStartMs = message.audio_start_ms ?? elapsedRef.current * 1000;
-        const gapMs =
-          lastSpeechEndMsRef.current === null
-            ? 0
-            : audioStartMs - lastSpeechEndMsRef.current;
-        const paragraphId =
-          !activeParagraphIdRef.current || gapMs > PARAGRAPH_BREAK_MS
-            ? createParagraph()
-            : activeParagraph();
-        if (message.item_id) registerItem(message.item_id, paragraphId);
-        return;
-      }
-
-      if (message.type === "input_audio_buffer.speech_stopped") {
-        if (message.item_id) registerItem(message.item_id);
-        lastSpeechEndMsRef.current =
-          message.audio_end_ms ?? elapsedRef.current * 1000;
-        return;
-      }
-
       if (message.type === "input_audio_buffer.committed" && message.item_id) {
         registerItem(message.item_id);
         return;
@@ -521,12 +497,50 @@ export function MeetingRecorder() {
       }
 
       if (message.type === "error") {
-        setError(message.error?.message ?? "Live transcription had a recoverable error.");
+        const errorMessage =
+          message.error?.message ?? "Live transcription had a recoverable error.";
+        if (/buffer (?:is )?(?:empty|too small)/i.test(errorMessage)) return;
+        setError(errorMessage);
       }
     } catch {
       // Ignore non-JSON WebRTC control events.
     }
   }, [createTranscriptParagraph]);
+
+  const stopAudioCommits = useCallback(() => {
+    if (audioCommitTimerRef.current !== null) {
+      window.clearInterval(audioCommitTimerRef.current);
+      audioCommitTimerRef.current = null;
+    }
+  }, []);
+
+  const commitAudioBuffer = useCallback((channel = dataChannelRef.current) => {
+    if (
+      channel?.readyState !== "open" ||
+      sessionStateRef.current !== "recording"
+    ) {
+      return;
+    }
+    channel.send(
+      JSON.stringify({
+        type: "input_audio_buffer.commit",
+        event_id: crypto.randomUUID(),
+      }),
+    );
+    lastAudioCommitAtRef.current = Date.now();
+  }, []);
+
+  const startAudioCommits = useCallback(
+    (channel: RTCDataChannel) => {
+      stopAudioCommits();
+      lastAudioCommitAtRef.current = Date.now();
+      audioCommitTimerRef.current = window.setInterval(
+        () => commitAudioBuffer(channel),
+        AUDIO_COMMIT_INTERVAL_MS,
+      );
+    },
+    [commitAudioBuffer, stopAudioCommits],
+  );
 
   const connectRealtime = useCallback(
     async (stream: MediaStream) => {
@@ -565,6 +579,7 @@ export function MeetingRecorder() {
           peer.connectionState === "failed" ||
           peer.connectionState === "disconnected"
         ) {
+          stopAudioCommits();
           setConnection("device");
           setError("Recording continues on this device. Live transcription disconnected.");
         }
@@ -573,7 +588,11 @@ export function MeetingRecorder() {
       const channel = peer.createDataChannel("oai-events");
       dataChannelRef.current = channel;
       channel.onmessage = handleRealtimeEvent;
-      channel.onopen = () => setConnection("live");
+      channel.onopen = () => {
+        setConnection("live");
+        startAudioCommits(channel);
+      };
+      channel.onclose = stopAudioCommits;
 
       try {
         const offer = await peer.createOffer();
@@ -605,6 +624,7 @@ export function MeetingRecorder() {
         const answerSdp = await response.text();
         await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
       } catch (issue) {
+        stopAudioCommits();
         channel.close();
         peer.close();
         outboundTrack.stop();
@@ -616,7 +636,7 @@ export function MeetingRecorder() {
         throw issue;
       }
     },
-    [handleRealtimeEvent],
+    [handleRealtimeEvent, startAudioCommits, stopAudioCommits],
   );
 
   const startRecording = async () => {
@@ -639,7 +659,6 @@ export function MeetingRecorder() {
       setEntries([]);
       processedTranscriptionEventsRef.current.clear();
       activeParagraphIdRef.current = null;
-      lastSpeechEndMsRef.current = null;
       transcriptionItemParagraphRef.current.clear();
       transcriptionItemTextRef.current.clear();
       completedTranscriptionItemsRef.current.clear();
@@ -648,7 +667,8 @@ export function MeetingRecorder() {
       analysisRequestRef.current += 1;
       setIsThinking(false);
       setInsight("");
-      setMode(null);
+      setQuestion("");
+      setMode("chat");
       setElapsed(0);
       setConnection("device");
       startedAtRef.current = Date.now();
@@ -674,6 +694,10 @@ export function MeetingRecorder() {
   const pauseRecording = () => {
     const recorder = recorderRef.current;
     if (recorder?.state === "recording") recorder.pause();
+    if (Date.now() - lastAudioCommitAtRef.current > 150) {
+      commitAudioBuffer();
+    }
+    stopAudioCommits();
     streamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = false;
     });
@@ -697,24 +721,33 @@ export function MeetingRecorder() {
     startedAtRef.current =
       Date.now() - elapsedRef.current * 1000 - pausedDurationRef.current;
     setSessionState("recording");
+    const channel = dataChannelRef.current;
+    if (channel?.readyState === "open") startAudioCommits(channel);
   };
 
   const stopRecording = () => {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
+    const channel = dataChannelRef.current;
+    if (
+      sessionStateRef.current === "recording" &&
+      Date.now() - lastAudioCommitAtRef.current > 150
+    ) {
+      commitAudioBuffer(channel);
+    }
+    stopAudioCommits();
     if (outboundMicrophoneTrackRef.current) {
       outboundMicrophoneTrackRef.current.enabled = false;
     }
     streamRef.current?.getTracks().forEach((track) => track.stop());
-    const channel = dataChannelRef.current;
     const peer = peerRef.current;
     const outboundTrack = outboundMicrophoneTrackRef.current;
     window.setTimeout(() => {
       channel?.close();
       peer?.close();
       outboundTrack?.stop();
-    }, 500);
+    }, 1500);
     streamRef.current = null;
     recorderRef.current = null;
     dataChannelRef.current = null;
@@ -725,12 +758,13 @@ export function MeetingRecorder() {
 
   useEffect(() => {
     return () => {
+      stopAudioCommits();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       outboundMicrophoneTrackRef.current?.stop();
       dataChannelRef.current?.close();
       peerRef.current?.close();
     };
-  }, []);
+  }, [stopAudioCommits]);
 
   const saveNote = (event: FormEvent) => {
     event.preventDefault();
@@ -746,24 +780,6 @@ export function MeetingRecorder() {
     setEntries((current) => [...current, entry]);
     setNote("");
     setNoteOpen(false);
-
-    if (dataChannelRef.current?.readyState === "open") {
-      dataChannelRef.current.send(
-        JSON.stringify({
-          type: "conversation.item.create",
-          item: {
-            type: "message",
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `[Meeting note at ${formatTime(entry.time)} — use as context, not spoken transcript] ${text}`,
-              },
-            ],
-          },
-        }),
-      );
-    }
   };
 
   const askQuestion = (event: FormEvent) => {
@@ -962,107 +978,43 @@ export function MeetingRecorder() {
         <aside className="insight-panel" aria-label="Meeting intelligence">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">Meta Display</p>
-              <h2>Meeting intelligence</h2>
+              <p className="eyebrow">Transcript chat</p>
+              <h2>Ask about the meeting</h2>
             </div>
-            <span className="live-chip"><i /> Live</span>
           </div>
 
-          <div className="mode-tabs" role="tablist" aria-label="Display mode">
-            <button
-              className={mode === "topics" ? "active" : ""}
-              type="button"
-              role="tab"
-              aria-selected={mode === "topics"}
-              onClick={() => {
-                runAnalysis("topics");
-              }}
-            >
-              <span aria-hidden="true">⌁</span> Key Topics
-            </button>
-            <button
-              className={mode === "actions" ? "active" : ""}
-              type="button"
-              role="tab"
-              aria-selected={mode === "actions"}
-              onClick={() => {
-                runAnalysis("actions");
-              }}
-            >
-              <span aria-hidden="true">✓</span> Action Items
-            </button>
-            <button
-              className={mode === "chat" ? "active" : ""}
-              type="button"
-              role="tab"
-              aria-selected={mode === "chat"}
-              onClick={() => {
-                analysisRequestRef.current += 1;
-                setIsThinking(false);
-                setMode("chat");
-                const prompt = "Ask a question about anything discussed in the meeting.";
-                setInsight(prompt);
-                publishMeta("chat", prompt, false);
-              }}
-            >
-              <span aria-hidden="true">◇</span> Chat
-            </button>
-          </div>
-
-          {mode === "chat" && (
-            <form className="chat-composer" onSubmit={askQuestion}>
-              <label htmlFor="meeting-question">Ask about this meeting</label>
-              <div>
-                <input
-                  id="meeting-question"
-                  value={question}
-                  onChange={(event) => setQuestion(event.target.value)}
-                  placeholder="What is blocking the launch?"
-                />
-                <button type="submit" disabled={!question.trim() || isThinking} aria-label="Ask question">↑</button>
-              </div>
-            </form>
-          )}
+          <form className="chat-composer" onSubmit={askQuestion}>
+            <label htmlFor="meeting-question">Ask about the transcript</label>
+            <div>
+              <input
+                id="meeting-question"
+                value={question}
+                onChange={(event) => setQuestion(event.target.value)}
+                placeholder="What is blocking the launch?"
+              />
+              <button
+                type="submit"
+                disabled={!question.trim() || isThinking}
+                aria-label="Ask question"
+              >
+                ↑
+              </button>
+            </div>
+          </form>
 
           <div className="meta-preview">
             <div className="meta-preview-header">
-              <span>{modeTitle(mode)}</span>
+              <span>Answer</span>
             </div>
             {isThinking ? (
               <ThinkingIndicator />
-            ) : mode ? (
+            ) : insight ? (
               <InsightText content={insight} />
             ) : (
               <div className="insight-empty">
-                Select Key Topics, Action Items, or Chat to begin.
+                Ask a question about the transcript to see the answer here.
               </div>
             )}
-          </div>
-
-          <p className="panel-note">
-            This content is mirrored to Meta Display and refreshes as the conversation continues.
-          </p>
-
-          <div className="panel-footer-actions">
-            {sessionState === "stopped" && (
-              <button
-                className="summary-button"
-                type="button"
-                onClick={() => {
-                  runAnalysis("summary");
-                }}
-              >
-                Generate meeting summary
-              </button>
-            )}
-            <a
-              className="open-display-button"
-              href="/display"
-              target={META_DISPLAY_WINDOW_NAME}
-              rel="opener"
-            >
-              Present on Meta Display <span aria-hidden="true">↗</span>
-            </a>
           </div>
         </aside>
       </div>

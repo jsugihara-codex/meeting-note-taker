@@ -1,24 +1,14 @@
 const realtimeSession = {
-  type: "realtime",
-  model: "gpt-realtime",
-  output_modalities: ["text"],
-  instructions:
-    "You are a silent meeting transcription assistant. Preserve added meeting notes as context. Do not generate a response unless the application explicitly requests one.",
+  type: "transcription",
   audio: {
     input: {
       noise_reduction: { type: "far_field" },
       transcription: {
-        model: "gpt-4o-mini-transcribe",
+        model: "gpt-realtime-whisper",
         language: "en",
+        delay: "minimal",
       },
-      turn_detection: {
-        type: "server_vad",
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 250,
-        create_response: false,
-        interrupt_response: false,
-      },
+      turn_detection: null,
     },
   },
 };

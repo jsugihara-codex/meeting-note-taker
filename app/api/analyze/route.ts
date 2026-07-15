@@ -1,19 +1,11 @@
 type AnalyzeRequest = {
-  mode?: "topics" | "actions" | "chat" | "summary";
+  mode?: "chat";
   transcript?: string;
   question?: string;
 };
 
-const instructions = {
-  topics:
-    "Return the 3 to 5 most important topics in the meeting so far. Use short, specific bullet points. Include decisions or tensions, not generic labels.",
-  actions:
-    "Return only concrete action items from the meeting so far. Use bullets in the format: Owner — action — timing. If an owner or timing is unknown, say Unassigned or Timing not set.",
-  chat:
-    "Answer the user's question using only the meeting transcript and notes. Be concise. If the answer is not in the meeting, say that clearly.",
-  summary:
-    "Write a concise meeting summary with three sections: Outcome, Key decisions, and Next steps. Preserve names, dates, risks, and open questions.",
-};
+const instruction =
+  "Answer the user's question using only the meeting transcript and notes. Be concise. If the answer is not in the meeting, say that clearly.";
 
 export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -31,18 +23,18 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid request." }, { status: 400 });
   }
 
-  const mode = body.mode ?? "topics";
   const transcript = body.transcript?.trim();
-  if (!transcript || !(mode in instructions)) {
+  const question = body.question?.trim();
+  if (!transcript || !question || (body.mode && body.mode !== "chat")) {
     return Response.json(
-      { error: "A transcript and valid analysis mode are required." },
+      { error: "A transcript and chat question are required." },
       { status: 400 },
     );
   }
 
   const prompt = [
-    `Task: ${instructions[mode]}`,
-    body.question ? `Question: ${body.question}` : "",
+    `Task: ${instruction}`,
+    `Question: ${question}`,
     "Meeting content:",
     transcript.slice(-24000),
   ]

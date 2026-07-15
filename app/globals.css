@@ -653,6 +653,9 @@ button {
   overflow: hidden;
 }
 
+.insight-panel .eyebrow { font-size: 16.5px; }
+.insight-panel .panel-heading h2 { font-size: 25.5px; }
+
 .panel-heading {
   padding: 22px 22px 19px;
   display: flex;
@@ -670,7 +673,7 @@ button {
   border-radius: 20px;
   background: var(--green-pale);
   color: var(--green);
-  font-size: 9px;
+  font-size: 13.5px;
   font-weight: 760;
   text-transform: uppercase;
 }
@@ -702,7 +705,7 @@ button {
   border-radius: 8px;
   background: transparent;
   color: #737d78;
-  font-size: 10px;
+  font-size: 15px;
   font-weight: 650;
   white-space: nowrap;
   cursor: pointer;
@@ -725,7 +728,7 @@ button {
   display: block;
   margin-bottom: 7px;
   color: #5f6964;
-  font-size: 10px;
+  font-size: 15px;
   font-weight: 680;
 }
 
@@ -750,7 +753,7 @@ button {
   border: 0;
   outline: none;
   color: var(--ink);
-  font-size: 11px;
+  font-size: 16.5px;
 }
 
 .chat-composer button {
@@ -783,13 +786,13 @@ button {
   gap: 12px;
   border-bottom: 1px solid #e4e9e6;
   color: #39433e;
-  font-size: 11px;
+  font-size: 16.5px;
   font-weight: 720;
 }
 
 .meta-preview-header i {
   color: var(--green);
-  font-size: 9px;
+  font-size: 13.5px;
   font-style: normal;
   font-weight: 600;
 }
@@ -800,7 +803,7 @@ button {
   display: grid;
   place-items: center;
   color: #818b86;
-  font-size: 12px;
+  font-size: 18px;
   line-height: 1.6;
   text-align: center;
 }
@@ -812,7 +815,7 @@ button {
   justify-content: center;
   gap: 10px;
   color: var(--green);
-  font-size: 12px;
+  font-size: 18px;
   font-weight: 680;
 }
 
@@ -847,7 +850,7 @@ button {
 .insight-text h4 {
   margin: 8px 0 6px;
   color: var(--green);
-  font-size: 10px;
+  font-size: 15px;
   font-weight: 760;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -875,7 +878,7 @@ button {
 .insight-line p {
   margin: 0;
   color: #4a554f;
-  font-size: 11px;
+  font-size: 16.5px;
   line-height: 1.55;
 }
 
@@ -883,7 +886,7 @@ button {
   margin: 0;
   padding: 0 19px 17px;
   color: #89928e;
-  font-size: 9px;
+  font-size: 13.5px;
   line-height: 1.5;
 }
 
@@ -899,6 +902,9 @@ button {
   width: 100%;
   padding: 0 14px;
 }
+
+.insight-panel .summary-button,
+.insight-panel .open-display-button { font-size: 19.5px; }
 
 .summary-button { background: var(--green); color: #fff; }
 .open-display-button { border: 1px solid #dfe4e1; background: #f8faf9; color: #49534e; text-decoration: none; }
@@ -1055,7 +1061,7 @@ button {
   max-width: 1050px;
   margin: 0;
   color: #dae4df;
-  font-size: clamp(20px, 2.45vw, 38px);
+  font-size: clamp(10px, 1.225vw, 19px);
   font-weight: 410;
   letter-spacing: -0.025em;
   line-height: 1.28;
@@ -1065,7 +1071,7 @@ button {
 .mode-chat .display-lines p {
   max-width: 1050px;
   color: #f0f5f2;
-  font-size: clamp(26px, 3.5vw, 52px);
+  font-size: clamp(13px, 1.75vw, 26px);
   line-height: 1.22;
 }
 
@@ -1175,8 +1181,8 @@ button {
   .display-status { font-size: 10px; }
   .display-content { padding: 22px 0 32px; }
   .display-lines article { grid-template-columns: 29px minmax(0, 1fr); gap: 10px; }
-  .display-lines p { font-size: 20px; }
-  .mode-chat .display-lines p { font-size: 27px; }
+  .display-lines p { font-size: 10px; }
+  .mode-chat .display-lines p { font-size: 13.5px; }
   .display-footer { align-items: flex-end; gap: 12px; }
   .display-footer time { text-align: right; }
 }

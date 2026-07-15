@@ -15,7 +15,7 @@ type MetaState = {
 const fallback: MetaState = {
   sequence: -1,
   mode: "idle",
-  title: "Meeting intelligence",
+  title: "Transcript chat",
   content: "",
   isThinking: false,
   updatedAt: 0,
@@ -258,7 +258,7 @@ export default function MetaDisplay() {
           </div>
         ) : meta.mode === "idle" ? (
           <div className="display-empty-state">
-            Choose Key Topics, Action Items, or Chat from the recorder.
+            Ask a question in the recorder to show the answer here.
           </div>
         ) : (
           <div className="display-lines">

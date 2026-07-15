@@ -2,8 +2,8 @@
 
 Meeting Room is a responsive meeting recorder for laptops and phones. It uses
 the OpenAI Realtime API over WebRTC for live transcription, supports
-timestamped notes, and provides continuously updated key topics, action items,
-meeting chat, and a separate presentation display.
+timestamped notes, and provides transcript-grounded meeting chat with a
+separate presentation display.
 
 ## Run locally
 
@@ -33,8 +33,9 @@ UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_rest_token
 The key is read only by server routes. It is never exposed to browser code.
 When recording starts, the server creates a short-lived Realtime client secret;
 the browser then streams a cloned microphone track directly to OpenAI over
-WebRTC. Vercel relays the session setup but does not proxy or store meeting
-audio.
+WebRTC. The transcription-only session uses `gpt-realtime-whisper` with minimal
+delay and client-controlled 500ms audio commits instead of silence detection.
+Vercel relays the session setup but does not proxy or store meeting audio.
 The Redis REST credentials remain server-side and store only the latest Meta
 Display state, which expires after six hours. Local development can use an
 in-memory fallback, but Vercel requires Redis so an independently opened Meta
@@ -53,9 +54,9 @@ Display receives reliable updates.
 
 Vercel uses `npm run build` and serves the Next.js application without a custom
 adapter. The separate Meta Display is available at the stable `/display` URL.
-It polls the shared state relay every 300ms, so action buttons immediately show
-the thinking indicator and then the generated response without opening or
-refreshing the display page.
+It polls the shared state relay every 300ms, so transcript-chat questions
+immediately show the thinking indicator and then the generated answer without
+opening or refreshing the display page.
 
 ## Useful commands
 
