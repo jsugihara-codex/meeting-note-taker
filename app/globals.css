@@ -298,6 +298,67 @@ button {
 .paused .waveform i { background: #e3c48f; }
 .stopped .waveform i { background: #a8cbbd; }
 
+.transcription-settings {
+  margin: -3px 0 17px;
+  padding: 13px;
+  display: grid;
+  grid-template-columns: minmax(150px, 0.9fr) minmax(110px, 0.6fr) minmax(190px, 1.4fr);
+  gap: 10px;
+  border: 1px solid #e3e8e5;
+  border-radius: 12px;
+  background: #f8faf8;
+}
+
+.transcription-settings label {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.transcription-settings label > span {
+  color: #66716b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.transcription-settings small {
+  color: #98a09c;
+  font-size: 9px;
+  font-weight: 550;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.transcription-settings select,
+.transcription-settings input {
+  width: 100%;
+  height: 37px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid #dce2df;
+  border-radius: 8px;
+  outline: none;
+  background: #fff;
+  color: #39433e;
+  font: inherit;
+  font-size: 11px;
+}
+
+.transcription-settings select:focus,
+.transcription-settings input:focus {
+  border-color: #7dad9b;
+  box-shadow: 0 0 0 3px rgba(18, 106, 80, 0.08);
+}
+
+.transcription-settings select:disabled,
+.transcription-settings input:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
 .recording-controls {
   display: flex;
   align-items: center;
@@ -525,6 +586,29 @@ button {
   font-weight: 650;
 }
 
+.transcript-quality {
+  padding: 6px 9px;
+  border: 1px solid #dce4e0;
+  border-radius: 20px;
+  color: #65706a;
+  background: #f8faf9;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.transcript-quality.processing {
+  color: #7a6748;
+  border-color: #eadfc9;
+  background: #fcf8f0;
+}
+
+.transcript-quality.complete {
+  color: var(--green);
+  border-color: #cfe1da;
+  background: #f2f8f5;
+}
+
 .transcript-list {
   flex: 1;
   min-height: 290px;
@@ -720,6 +804,39 @@ button {
 
 .mode-tabs button span { font-size: 12px; }
 
+.summary-action {
+  padding: 16px 18px 0;
+}
+
+.summary-action .summary-button {
+  min-height: 46px;
+  border: 0;
+}
+
+.summary-action .summary-button:disabled {
+  opacity: 0.48;
+  cursor: default;
+  transform: none;
+}
+
+.summary-action .summary-button svg {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.summary-action p {
+  margin: 7px 2px 0;
+  color: #89928e;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .chat-composer {
   padding: 16px 18px 0;
 }
@@ -795,6 +912,41 @@ button {
   font-size: 13.5px;
   font-style: normal;
   font-weight: 600;
+}
+
+.copy-insight-button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #d9e1dd;
+  border-radius: 8px;
+  background: #fff;
+  color: #59645e;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+.copy-insight-button:hover {
+  border-color: #9ebcaf;
+  background: #f3f8f5;
+  color: var(--green);
+}
+
+.copy-insight-button.copied {
+  border-color: #b8d4c8;
+  background: #edf7f2;
+  color: var(--green);
+}
+
+.copy-insight-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .insight-empty {
@@ -1146,6 +1298,13 @@ button {
   .waveform { height: 59px; margin: 16px -2px 18px; gap: 3px; }
   .waveform i:nth-child(n+32) { display: none; }
 
+  .transcription-settings {
+    grid-template-columns: 1fr 1fr;
+    padding: 11px;
+  }
+
+  .transcription-settings .terms-setting { grid-column: 1 / -1; }
+
   .recording-controls {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -1170,6 +1329,7 @@ button {
 
   .panel-heading { padding: 20px 18px 17px; }
   .mode-tabs { padding: 13px; }
+  .summary-action { padding: 14px 14px 0; }
   .meta-preview { margin: 14px 14px 11px; }
   .panel-footer-actions { padding: 14px; }
 

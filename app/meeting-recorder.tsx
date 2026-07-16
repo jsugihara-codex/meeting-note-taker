@@ -9,8 +9,11 @@ import {
 } from "react";
 
 type SessionState = "idle" | "connecting" | "recording" | "paused" | "stopped";
-type InsightMode = "chat";
+type InsightMode = "chat" | "summary";
 type DisplayMode = InsightMode | "idle";
+type MicrophoneProfile = "far_field" | "near_field";
+type TranscriptionLanguage = "en" | "auto";
+type FinalizationState = "idle" | "processing" | "complete";
 
 type TranscriptEntry = {
   id: string;
@@ -32,7 +35,9 @@ type MetaState = {
 };
 
 const META_DISPLAY_WINDOW_NAME = "meeting-room-meta-display";
-const AUDIO_COMMIT_INTERVAL_MS = 1750;
+const AUDIO_COMMIT_INTERVAL_MS = 2200;
+const LOCAL_AUDIO_SEGMENT_MS = 5 * 60 * 1000;
+const RECORDER_AUDIO_BITS_PER_SECOND = 48_000;
 const TRANSCRIPTION_PROMPT_LEAKS = [
   "context transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
   "transcribe a business meeting accurately preserve names acronyms commitments dates and decisions",
@@ -88,6 +93,44 @@ function mergeTranscriptChunks(chunks: string[]) {
   return chunks.reduce(appendTranscriptChunk, "");
 }
 
+function mediaRecorderOptions(): MediaRecorderOptions {
+  const preferredTypes = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4;codecs=mp4a.40.2",
+    "audio/mp4",
+  ];
+  const mimeType = preferredTypes.find((type) =>
+    MediaRecorder.isTypeSupported(type),
+  );
+  return {
+    ...(mimeType ? { mimeType } : {}),
+    audioBitsPerSecond: RECORDER_AUDIO_BITS_PER_SECOND,
+  };
+}
+
+function audioFileExtension(mimeType: string) {
+  return mimeType.includes("mp4") ? "m4a" : "webm";
+}
+
+async function writeClipboardText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard unavailable");
+}
+
 function formatTime(seconds: number, includeHours = false) {
   const safeSeconds = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(safeSeconds / 3600);
@@ -98,7 +141,8 @@ function formatTime(seconds: number, includeHours = false) {
 }
 
 function modeTitle(mode: InsightMode | null) {
-  return mode ? "Meeting answer" : "Transcript chat";
+  if (mode === "summary") return "Meeting summary";
+  return mode === "chat" ? "Meeting answer" : "Transcript chat";
 }
 
 function TypewriterText({ text }: { text: string }) {
@@ -205,9 +249,17 @@ export function MeetingRecorder() {
   const [insight, setInsight] = useState("");
   const [question, setQuestion] = useState("");
   const [isThinking, setIsThinking] = useState(false);
+  const [hasCopiedInsight, setHasCopiedInsight] = useState(false);
   const [connection, setConnection] = useState<"preview" | "live" | "device">(
     "preview",
   );
+  const [microphoneProfile, setMicrophoneProfile] =
+    useState<MicrophoneProfile>("far_field");
+  const [transcriptionLanguage, setTranscriptionLanguage] =
+    useState<TranscriptionLanguage>("en");
+  const [transcriptionTerms, setTranscriptionTerms] = useState("");
+  const [finalizationState, setFinalizationState] =
+    useState<FinalizationState>("idle");
   const [error, setError] = useState("");
 
   const streamRef = useRef<MediaStream | null>(null);
@@ -216,6 +268,11 @@ export function MeetingRecorder() {
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const outboundMicrophoneTrackRef = useRef<MediaStreamTrack | null>(null);
   const audioCommitTimerRef = useRef<number | null>(null);
+  const localAudioSegmentTimerRef = useRef<number | null>(null);
+  const recordedAudioSegmentsRef = useRef<Blob[]>([]);
+  const continueAudioSegmentsRef = useRef(false);
+  const deviceRecorderStoppedRef = useRef(Promise.resolve());
+  const startDeviceRecorderRef = useRef<(stream: MediaStream) => void>(() => undefined);
   const lastAudioCommitAtRef = useRef(0);
   const metaSequenceRef = useRef(0);
   const metaPublishChainRef = useRef(Promise.resolve());
@@ -334,9 +391,15 @@ export function MeetingRecorder() {
 
   const transcriptForAnalysis = useCallback((source = entries) => {
     return source
-      .map(
-        (entry) =>
-          `[${formatTime(entry.time)}] ${entry.kind === "note" ? "Meeting note" : entry.speaker}: ${entry.text}`,
+      .map((entry, index) => ({ entry, index }))
+      .sort(
+        (left, right) =>
+          left.entry.time - right.entry.time || left.index - right.index,
+      )
+      .map(({ entry }) =>
+        entry.kind === "note"
+          ? `[${formatTime(entry.time)}] USER-ADDED NOTE AT THIS POINT IN THE MEETING: ${entry.text}`
+          : `[${formatTime(entry.time)}] TRANSCRIPT: ${entry.text}`,
       )
       .join("\n");
   }, [entries]);
@@ -344,9 +407,11 @@ export function MeetingRecorder() {
   const runAnalysis = useCallback(
     async (nextMode: InsightMode, nextQuestion = "", source = entries) => {
       const requestId = ++analysisRequestRef.current;
+      setError("");
       setMode(nextMode);
       setInsight("");
       setIsThinking(true);
+      setHasCopiedInsight(false);
       publishMeta(nextMode, "", true);
 
       try {
@@ -359,16 +424,29 @@ export function MeetingRecorder() {
             transcript: transcriptForAnalysis(source),
           }),
         });
-        const result = (await response.json()) as { text?: string };
-        if (!response.ok || !result.text) throw new Error("fallback");
+        const result = (await response.json()) as {
+          text?: string;
+          error?: string;
+        };
+        if (!response.ok || !result.text) {
+          throw new Error(
+            result.error ?? "The meeting response could not be generated.",
+          );
+        }
         if (requestId === analysisRequestRef.current) {
           setInsight(result.text);
           setIsThinking(false);
           publishMeta(nextMode, result.text, false);
         }
-      } catch {
+      } catch (issue) {
         if (requestId === analysisRequestRef.current) {
-          const message = "An answer could not be generated. Please try again.";
+          const message =
+            issue instanceof Error
+              ? issue.message
+              : nextMode === "summary"
+                ? "A meeting summary could not be generated. Please try again."
+                : "An answer could not be generated. Please try again.";
+          setError(message);
           setInsight(message);
           setIsThinking(false);
           publishMeta(nextMode, message, false);
@@ -382,6 +460,7 @@ export function MeetingRecorder() {
 
   const handleRealtimeEvent = useCallback((event: MessageEvent<string>) => {
     try {
+      if (sessionStateRef.current === "stopped") return;
       const message = JSON.parse(event.data) as {
         type?: string;
         event_id?: string;
@@ -514,6 +593,47 @@ export function MeetingRecorder() {
     }
   }, []);
 
+  const stopLocalAudioSegments = useCallback(() => {
+    if (localAudioSegmentTimerRef.current !== null) {
+      window.clearInterval(localAudioSegmentTimerRef.current);
+      localAudioSegmentTimerRef.current = null;
+    }
+  }, []);
+
+  const startDeviceRecorder = useCallback((stream: MediaStream) => {
+    const segmentChunks: Blob[] = [];
+    const recorder = new MediaRecorder(stream, mediaRecorderOptions());
+    let resolveRecorderStopped: () => void = () => undefined;
+    deviceRecorderStoppedRef.current = new Promise<void>((resolve) => {
+      resolveRecorderStopped = () => resolve();
+    });
+    recorderRef.current = recorder;
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) segmentChunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      if (segmentChunks.length > 0) {
+        recordedAudioSegmentsRef.current.push(
+          new Blob(segmentChunks, {
+            type:
+              recorder.mimeType ||
+              segmentChunks[0]?.type ||
+              "audio/webm",
+          }),
+        );
+      }
+      if (continueAudioSegmentsRef.current && stream.active) {
+        startDeviceRecorderRef.current(stream);
+      }
+      resolveRecorderStopped();
+    };
+    recorder.start(1000);
+  }, []);
+
+  useEffect(() => {
+    startDeviceRecorderRef.current = startDeviceRecorder;
+  }, [startDeviceRecorder]);
+
   const commitAudioBuffer = useCallback((channel = dataChannelRef.current) => {
     if (
       channel?.readyState !== "open" ||
@@ -547,6 +667,10 @@ export function MeetingRecorder() {
       const tokenResponse = await fetch("/api/realtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          microphoneProfile,
+          language: transcriptionLanguage,
+        }),
       });
       const tokenData = (await tokenResponse.json()) as {
         value?: string;
@@ -636,11 +760,80 @@ export function MeetingRecorder() {
         throw issue;
       }
     },
-    [handleRealtimeEvent, startAudioCommits, stopAudioCommits],
+    [
+      handleRealtimeEvent,
+      microphoneProfile,
+      startAudioCommits,
+      stopAudioCommits,
+      transcriptionLanguage,
+    ],
+  );
+
+  const finalizeTranscript = useCallback(
+    async (segments: Blob[]) => {
+      if (segments.length === 0) return false;
+
+      const transcripts = await Promise.all(
+        segments.map(async (segment, index) => {
+          const requestBody = new FormData();
+          const extension = audioFileExtension(segment.type);
+          requestBody.append(
+            "audio",
+            new File([segment], `meeting-${index + 1}.${extension}`, {
+              type: segment.type,
+            }),
+          );
+          requestBody.append("language", transcriptionLanguage);
+          if (transcriptionTerms.trim()) {
+            requestBody.append("terms", transcriptionTerms.trim());
+          }
+
+          const response = await fetch("/api/transcribe", {
+            method: "POST",
+            body: requestBody,
+          });
+          const result = (await response.json()) as {
+            text?: string;
+            error?: string;
+          };
+          if (response.status === 422) return "";
+          if (!response.ok) {
+            throw new Error(
+              result.error ?? "The final accuracy pass could not be completed.",
+            );
+          }
+          return result.text?.trim() ?? "";
+        }),
+      );
+
+      const finalText = mergeTranscriptChunks(transcripts.filter(Boolean));
+      if (!finalText) return false;
+
+      setEntries((current) => {
+        const firstSpeech = current.find((entry) => entry.kind === "speech");
+        const firstSpeechTime =
+          firstSpeech?.time ?? 0;
+        const notes = current.filter((entry) => entry.kind === "note");
+        return [
+          {
+            id: firstSpeech?.id ?? `final-transcript-${crypto.randomUUID()}`,
+            time: firstSpeechTime,
+            speaker: "Transcript",
+            text: finalText,
+            kind: "speech" as const,
+            draft: false,
+          },
+          ...notes,
+        ].sort((left, right) => left.time - right.time);
+      });
+      return true;
+    },
+    [transcriptionLanguage, transcriptionTerms],
   );
 
   const startRecording = async () => {
     setError("");
+    setFinalizationState("idle");
     setSessionState("connecting");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -652,9 +845,14 @@ export function MeetingRecorder() {
       });
       streamRef.current = stream;
 
-      const recorder = new MediaRecorder(stream);
-      recorderRef.current = recorder;
-      recorder.start(1000);
+      recordedAudioSegmentsRef.current = [];
+      continueAudioSegmentsRef.current = true;
+      startDeviceRecorder(stream);
+      stopLocalAudioSegments();
+      localAudioSegmentTimerRef.current = window.setInterval(() => {
+        const recorder = recorderRef.current;
+        if (recorder?.state === "recording") recorder.stop();
+      }, LOCAL_AUDIO_SEGMENT_MS);
 
       setEntries([]);
       processedTranscriptionEventsRef.current.clear();
@@ -686,6 +884,11 @@ export function MeetingRecorder() {
         );
       });
     } catch {
+      continueAudioSegmentsRef.current = false;
+      stopLocalAudioSegments();
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      recorderRef.current = null;
       setSessionState("idle");
       setError("Microphone access is needed to start recording.");
     }
@@ -725,10 +928,7 @@ export function MeetingRecorder() {
     if (channel?.readyState === "open") startAudioCommits(channel);
   };
 
-  const stopRecording = () => {
-    if (recorderRef.current && recorderRef.current.state !== "inactive") {
-      recorderRef.current.stop();
-    }
+  const stopRecording = async () => {
     const channel = dataChannelRef.current;
     if (
       sessionStateRef.current === "recording" &&
@@ -737,6 +937,13 @@ export function MeetingRecorder() {
       commitAudioBuffer(channel);
     }
     stopAudioCommits();
+    stopLocalAudioSegments();
+    continueAudioSegmentsRef.current = false;
+
+    const recorder = recorderRef.current;
+    const recorderStopped = deviceRecorderStoppedRef.current;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+
     if (outboundMicrophoneTrackRef.current) {
       outboundMicrophoneTrackRef.current.enabled = false;
     }
@@ -753,18 +960,43 @@ export function MeetingRecorder() {
     dataChannelRef.current = null;
     peerRef.current = null;
     outboundMicrophoneTrackRef.current = null;
+    sessionStateRef.current = "stopped";
     setSessionState("stopped");
+    setNoteOpen(false);
+    setFinalizationState("processing");
+
+    try {
+      await recorderStopped;
+      const finalized = await finalizeTranscript([
+        ...recordedAudioSegmentsRef.current,
+      ]);
+      setFinalizationState(finalized ? "complete" : "idle");
+    } catch (issue) {
+      setFinalizationState("idle");
+      setError(
+        `The live transcript was kept. ${
+          issue instanceof Error
+            ? issue.message
+            : "The final accuracy pass could not be completed."
+        }`,
+      );
+    }
   };
 
   useEffect(() => {
     return () => {
       stopAudioCommits();
+      stopLocalAudioSegments();
+      continueAudioSegmentsRef.current = false;
+      if (recorderRef.current?.state !== "inactive") {
+        recorderRef.current?.stop();
+      }
       streamRef.current?.getTracks().forEach((track) => track.stop());
       outboundMicrophoneTrackRef.current?.stop();
       dataChannelRef.current?.close();
       peerRef.current?.close();
     };
-  }, [stopAudioCommits]);
+  }, [stopAudioCommits, stopLocalAudioSegments]);
 
   const saveNote = (event: FormEvent) => {
     event.preventDefault();
@@ -789,8 +1021,25 @@ export function MeetingRecorder() {
     runAnalysis("chat", text);
   };
 
+  const copyInsight = async () => {
+    if (!insight.trim()) return;
+    try {
+      const plainText = insight
+        .replace(/\*\*/g, "")
+        .replace(/^[-*•]\s*/gm, "• ")
+        .trim();
+      await writeClipboardText(plainText);
+      setHasCopiedInsight(true);
+      window.setTimeout(() => setHasCopiedInsight(false), 1800);
+    } catch {
+      setError("The summary could not be copied. Please select and copy the text manually.");
+    }
+  };
+
   const statusLabel =
-    sessionState === "recording"
+    finalizationState === "processing"
+      ? "Improving transcript accuracy"
+      : sessionState === "recording"
       ? connection === "live"
         ? "Live transcription"
         : "Recording on device"
@@ -803,6 +1052,8 @@ export function MeetingRecorder() {
             : "Preview meeting";
 
   const isActive = sessionState === "recording" || sessionState === "paused";
+  const settingsDisabled =
+    sessionState === "connecting" || finalizationState === "processing";
 
   return (
     <main className="app-shell">
@@ -861,16 +1112,60 @@ export function MeetingRecorder() {
               ))}
             </div>
 
+            {!isActive && (
+              <div className="transcription-settings" aria-label="Transcription settings">
+                <label>
+                  <span>Microphone</span>
+                  <select
+                    value={microphoneProfile}
+                    onChange={(event) =>
+                      setMicrophoneProfile(event.target.value as MicrophoneProfile)
+                    }
+                    disabled={settingsDisabled}
+                  >
+                    <option value="far_field">Laptop or room mic</option>
+                    <option value="near_field">Headset or close phone</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Language</span>
+                  <select
+                    value={transcriptionLanguage}
+                    onChange={(event) =>
+                      setTranscriptionLanguage(
+                        event.target.value as TranscriptionLanguage,
+                      )
+                    }
+                    disabled={settingsDisabled}
+                  >
+                    <option value="en">English</option>
+                    <option value="auto">Auto detect</option>
+                  </select>
+                </label>
+                <label className="terms-setting">
+                  <span>Names &amp; terms <small>optional</small></span>
+                  <input
+                    value={transcriptionTerms}
+                    onChange={(event) => setTranscriptionTerms(event.target.value)}
+                    placeholder="e.g. Sugihara, BIDI, Vercel"
+                    disabled={settingsDisabled}
+                  />
+                </label>
+              </div>
+            )}
+
             <div className="recording-controls">
               {!isActive ? (
                 <button
                   className="record-button start"
                   type="button"
                   onClick={startRecording}
-                  disabled={sessionState === "connecting"}
+                  disabled={settingsDisabled}
                 >
                   <span className="mic-symbol" aria-hidden="true" />
-                  {sessionState === "connecting"
+                  {finalizationState === "processing"
+                    ? "Improving transcript…"
+                    : sessionState === "connecting"
                     ? "Connecting…"
                     : sessionState === "stopped"
                       ? "Record again"
@@ -940,6 +1235,13 @@ export function MeetingRecorder() {
                 <p className="eyebrow">What was said</p>
                 <h2 id="transcript-title">Live transcript</h2>
               </div>
+              {finalizationState !== "idle" && (
+                <span className={`transcript-quality ${finalizationState}`}>
+                  {finalizationState === "processing"
+                    ? "Improving accuracy…"
+                    : "Accuracy pass complete"}
+                </span>
+              )}
             </div>
 
             <div
@@ -989,6 +1291,30 @@ export function MeetingRecorder() {
             </div>
           </div>
 
+          <div className="summary-action">
+            <button
+              className="summary-button"
+              type="button"
+              onClick={() => runAnalysis("summary")}
+              disabled={
+                entries.length === 0 ||
+                isThinking ||
+                finalizationState === "processing"
+              }
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3.5 13.6 8l4.4 1.6-4.4 1.6L12 15.5l-1.6-4.3L6 9.6 10.4 8 12 3.5Z" />
+                <path d="m18.5 15 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
+              </svg>
+              {isThinking && mode === "summary"
+                ? "Generating summary…"
+                : mode === "summary" && insight
+                  ? "Regenerate summary"
+                  : "Summarize meeting"}
+            </button>
+            <p>Includes the transcript and every note at its recorded timestamp.</p>
+          </div>
+
           <form className="chat-composer" onSubmit={askQuestion}>
             <label htmlFor="meeting-question">Ask about the transcript</label>
             <div>
@@ -1010,7 +1336,27 @@ export function MeetingRecorder() {
 
           <div className="meta-preview">
             <div className="meta-preview-header">
-              <span>Answer</span>
+              <span>{mode === "summary" ? "Meeting summary" : "Answer"}</span>
+              {mode === "summary" && insight && !isThinking && (
+                <button
+                  className={`copy-insight-button${hasCopiedInsight ? " copied" : ""}`}
+                  type="button"
+                  onClick={copyInsight}
+                  aria-label={hasCopiedInsight ? "Summary copied" : "Copy summary"}
+                  title={hasCopiedInsight ? "Copied" : "Copy summary"}
+                >
+                  {hasCopiedInsight ? (
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m5 12.5 4.2 4.2L19 7" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="8" y="8" width="11" height="11" rx="2" />
+                      <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+                    </svg>
+                  )}
+                </button>
+              )}
             </div>
             {isThinking ? (
               <ThinkingIndicator />
@@ -1018,7 +1364,9 @@ export function MeetingRecorder() {
               <InsightText content={insight} />
             ) : (
               <div className="insight-empty">
-                Ask a question about the transcript to see the answer here.
+                {mode === "summary"
+                  ? "Generate a summary to see the meeting outcome, decisions, next steps, and timestamped notes."
+                  : "Ask a question about the transcript to see the answer here."}
               </div>
             )}
           </div>

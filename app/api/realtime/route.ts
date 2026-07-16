@@ -1,19 +1,9 @@
-const realtimeSession = {
-  type: "transcription",
-  audio: {
-    input: {
-      noise_reduction: { type: "far_field" },
-      transcription: {
-        model: "gpt-realtime-whisper",
-        language: "en",
-        delay: "low",
-      },
-      turn_detection: null,
-    },
-  },
+type RealtimePreferences = {
+  microphoneProfile?: "near_field" | "far_field";
+  language?: "en" | "auto";
 };
 
-export async function POST() {
+export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
@@ -24,6 +14,33 @@ export async function POST() {
   }
 
   try {
+    let preferences: RealtimePreferences = {};
+    try {
+      preferences = (await request.json()) as RealtimePreferences;
+    } catch {
+      // Use safe defaults when no preferences were supplied.
+    }
+
+    const microphoneProfile =
+      preferences.microphoneProfile === "near_field"
+        ? "near_field"
+        : "far_field";
+    const language = preferences.language === "auto" ? undefined : "en";
+    const realtimeSession = {
+      type: "transcription",
+      audio: {
+        input: {
+          noise_reduction: { type: microphoneProfile },
+          transcription: {
+            model: "gpt-realtime-whisper",
+            ...(language ? { language } : {}),
+            delay: "medium",
+          },
+          turn_detection: null,
+        },
+      },
+    };
+
     const upstream = await fetch(
       "https://api.openai.com/v1/realtime/client_secrets",
       {
