@@ -46,6 +46,61 @@ function redisConfig() {
   return url && token ? { url: url.replace(/\/$/, ""), token } : null;
 }
 
+function remoteDisplayOrigin(request: Request) {
+  const configured = process.env.META_DISPLAY_ORIGIN?.trim();
+  if (!configured) return null;
+
+  try {
+    const remote = new URL(configured);
+    const current = new URL(request.url);
+    if (!/^https?:$/.test(remote.protocol) || remote.origin === current.origin) {
+      return null;
+    }
+    return remote.origin;
+  } catch {
+    return null;
+  }
+}
+
+async function proxyToHostedDisplay(request: Request, remoteOrigin: string) {
+  const relayToken = process.env.META_DISPLAY_RELAY_TOKEN?.trim();
+  if (!relayToken) {
+    return Response.json(
+      { error: "The hosted Meta Display relay token is not configured." },
+      { status: 503, headers: NO_STORE_HEADERS },
+    );
+  }
+
+  const incomingUrl = new URL(request.url);
+  const remoteUrl = new URL("/api/meta-state", remoteOrigin);
+  remoteUrl.search = incomingUrl.search;
+
+  const response = await fetch(remoteUrl, {
+    method: request.method,
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${relayToken}`,
+      ...(request.method === "POST"
+        ? { "Content-Type": "application/json" }
+        : {}),
+    },
+    body: request.method === "POST" ? await request.text() : undefined,
+    cache: "no-store",
+  });
+
+  if (response.status === 204) {
+    return new Response(null, { status: 204, headers: NO_STORE_HEADERS });
+  }
+
+  return new Response(await response.text(), {
+    status: response.status,
+    headers: {
+      ...NO_STORE_HEADERS,
+      "Content-Type": response.headers.get("Content-Type") ?? "application/json",
+    },
+  });
+}
+
 async function redisCommand(command: unknown[]) {
   const config = redisConfig();
   if (!config) return null;
@@ -103,10 +158,26 @@ function hasWriteAccess(request: Request) {
   const requestOrigin = new URL(request.url).origin;
   const browserOrigin = request.headers.get("origin");
   if (browserOrigin === requestOrigin) return true;
-  return request.headers.get("sec-fetch-site") === "same-origin";
+  if (request.headers.get("sec-fetch-site") === "same-origin") return true;
+
+  const relayToken = process.env.META_DISPLAY_RELAY_TOKEN?.trim();
+  const authorization = request.headers.get("authorization");
+  return Boolean(relayToken && authorization === `Bearer ${relayToken}`);
 }
 
 export async function GET(request: Request) {
+  const remoteOrigin = remoteDisplayOrigin(request);
+  if (remoteOrigin) {
+    try {
+      return await proxyToHostedDisplay(request, remoteOrigin);
+    } catch {
+      return Response.json(
+        { error: "The hosted Meta Display is temporarily unavailable." },
+        { status: 503, headers: NO_STORE_HEADERS },
+      );
+    }
+  }
+
   if (sharedStorageRequired()) {
     return Response.json(
       { error: "Shared Meta Display storage is not configured." },
@@ -138,9 +209,21 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const remoteOrigin = remoteDisplayOrigin(request);
+  if (remoteOrigin) {
+    try {
+      return await proxyToHostedDisplay(request, remoteOrigin);
+    } catch {
+      return Response.json(
+        { error: "The hosted Meta Display is temporarily unavailable." },
+        { status: 503, headers: NO_STORE_HEADERS },
+      );
+    }
+  }
+
   if (!hasWriteAccess(request)) {
     return Response.json(
-      { error: "The Meta Display update must come from this application." },
+      { error: "The Meta Display relay token is invalid." },
       { status: 401, headers: NO_STORE_HEADERS },
     );
   }
