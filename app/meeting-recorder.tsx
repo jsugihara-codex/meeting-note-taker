@@ -47,6 +47,12 @@ type ChatExchange = {
 };
 
 const META_DISPLAY_WINDOW_NAME = "meeting-room-meta-display";
+const META_DISPLAY_ORIGIN = (
+  process.env.NEXT_PUBLIC_META_DISPLAY_ORIGIN ?? ""
+).replace(/\/$/, "");
+const META_DISPLAY_URL = META_DISPLAY_ORIGIN
+  ? `${META_DISPLAY_ORIGIN}/display`
+  : "/display";
 const AUDIO_COMMIT_INTERVAL_MS = 2200;
 const LOCAL_AUDIO_SEGMENT_MS = 5 * 60 * 1000;
 const RECORDER_AUDIO_BITS_PER_SECOND = 48_000;
@@ -1159,7 +1165,7 @@ export function MeetingRecorder() {
         </div>
         <a
           className="display-link"
-          href="/display"
+          href={META_DISPLAY_URL}
           target={META_DISPLAY_WINDOW_NAME}
           rel="opener"
         >
