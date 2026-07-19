@@ -503,6 +503,21 @@ button {
   box-shadow: 0 0 0 3px rgba(18, 106, 80, 0.09);
 }
 
+.note-panel-composer {
+  margin: 0;
+  padding: 18px 26px;
+  border: 0;
+  border-bottom: 1px solid #edf0ee;
+  border-radius: 0;
+  background: #fafcfb;
+}
+
+.note-panel-composer .note-heading { margin-bottom: 10px; }
+.note-panel-composer .note-actions { margin-top: 9px; }
+.note-panel-composer .note-actions button[type="submit"] {
+  min-width: 92px;
+}
+
 .note-actions {
   margin-top: 10px;
   display: flex;
@@ -676,22 +691,6 @@ button {
   line-height: 1.58;
 }
 
-.typewriter-text { white-space: pre-wrap; }
-.typewriter-cursor {
-  width: 1px;
-  height: 1em;
-  margin-left: 2px;
-  display: inline-block;
-  vertical-align: -0.14em;
-  background: currentColor;
-  animation: typewriter-blink 0.72s steps(1) infinite;
-}
-
-@keyframes typewriter-blink {
-  0%, 48% { opacity: 1; }
-  49%, 100% { opacity: 0; }
-}
-
 .transcript-entry.note .transcript-copy {
   padding: 10px 12px;
   border-radius: 9px;
@@ -730,6 +729,7 @@ button {
 .empty-rings::after { inset: 15px; border: 0; background: var(--green); }
 .empty-state h3 { margin: 0 0 6px; font-size: 13px; }
 .empty-state p { margin: 0; color: var(--muted); font-size: 11px; }
+.notes-empty { min-height: 150px; }
 
 .insight-panel {
   position: sticky;
@@ -1010,6 +1010,23 @@ button {
 
 .insight-text h4:first-child { margin-top: 0; }
 
+.key-topic-title {
+  margin: 14px 0 4px;
+  color: var(--violet);
+  font-size: 17px;
+  font-weight: 780;
+  line-height: 1.35;
+}
+
+.key-topic-summary {
+  margin: 0 0 12px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid rgba(218, 225, 221, 0.72);
+  color: #4a554f;
+  font-size: 16.5px;
+  line-height: 1.55;
+}
+
 .insight-line {
   padding: 8px 0;
   display: grid;
@@ -1154,7 +1171,8 @@ button {
 }
 
 .display-lines article,
-.display-lines h2 {
+.display-lines h2,
+.display-lines h3 {
   animation: display-line-rise 180ms ease-out;
 }
 
@@ -1195,11 +1213,24 @@ button {
   text-transform: uppercase;
 }
 
+.display-lines .display-topic-title {
+  margin: 8px 0 -8px;
+  color: #a8a7ff;
+  font-size: clamp(13px, 1.5vw, 22px);
+  font-weight: 760;
+  line-height: 1.25;
+}
+
 .display-lines article {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
   gap: clamp(14px, 2vw, 28px);
   align-items: start;
+}
+
+.display-lines .display-topic-summary {
+  grid-template-columns: 1fr;
+  margin-bottom: clamp(4px, 0.8vh, 10px);
 }
 
 .display-lines article > span {
@@ -1311,11 +1342,18 @@ button {
   }
 
   .record-button { width: 100%; min-width: 0; grid-column: 1 / -1; }
+  .record-button.stop { grid-column: auto; }
   .secondary-control { width: 100%; padding: 0 9px; }
   .note-composer { margin-top: 14px; padding: 14px; }
+  .note-panel-composer {
+    margin: 0;
+    padding: 15px 17px;
+    border-radius: 0;
+  }
 
   .section-heading { padding: 20px 17px 16px; }
   .transcript-card { height: 390px; }
+  .transcript-card.notes-card { height: 480px; }
   .transcript-list { padding: 7px 17px 12px; }
   .transcript-entry {
     grid-template-columns: 31px minmax(0, 1fr);
