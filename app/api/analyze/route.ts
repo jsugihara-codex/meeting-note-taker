@@ -2,13 +2,22 @@ type AnalyzeRequest = {
   mode?: "chat" | "summary";
   transcript?: string;
   question?: string;
+  notes?: Array<{
+    timestamp?: string;
+    text?: string;
+  }>;
+  chats?: Array<{
+    timestamp?: string;
+    question?: string;
+    answer?: string;
+  }>;
 };
 
 const instructions = {
   chat:
-    "Answer the user's question using only the meeting transcript and timestamped notes. Treat every USER-ADDED NOTE as authoritative context at its stated timestamp. Be concise. If the answer is not in the meeting, say that clearly.",
+    "Answer the user's question using only the spoken meeting transcript, the separate explicit user notes, and prior meeting-chat questions and answers. Treat every explicit user note as authoritative context at its stated timestamp. Be concise. If the answer is not in the provided meeting content, say that clearly.",
   summary:
-    "Create a concise, useful meeting summary using only the transcript and timestamped notes. Use the headings Outcome, Key decisions, Next steps, and Notes. Treat every USER-ADDED NOTE as authoritative context anchored at its stated timestamp. Include every user-added note with its timestamp under Notes, and also incorporate its context into the relevant Outcome, Key decisions, or Next steps sections. Do not invent decisions, owners, deadlines, or action items.",
+    "Create a concise, useful meeting summary using only the spoken transcript, the separate explicit user notes, and the meeting-chat questions and answers. Use the headings Key topics, Key decisions, Next steps, and Notes, in that order. Under Key topics, identify every material high-level category or subject covered, consolidate repeated discussion into the same category, and give each category enough context to understand the discussion. Format each category exactly as a bold Markdown headline on its own line, such as **Launch planning**, followed on the next line by one concise paragraph of no more than four complete sentences. Do not use bullets for the bold topic headlines and do not write a separate outcome paragraph. Under Key decisions and Next steps, use concise bullets. Under Notes, list exactly and only the explicit notes entered in the Meeting notes field, preserving every timestamp. Never infer a note from spoken transcript or chat text and never copy or relabel transcript or chat text as a user-added note. If there are no explicit notes, write 'No user-added notes.' under Notes. Explicit notes may also inform Key topics, Key decisions, or Next steps. Do not invent topics, decisions, owners, deadlines, action items, or notes.",
 } as const;
 
 type OpenAIResponse = {
@@ -59,8 +68,30 @@ export async function POST(request: Request) {
 
   const transcript = body.transcript?.trim();
   const question = body.question?.trim();
+  const explicitNotes = Array.isArray(body.notes)
+    ? body.notes
+        .map((note) => ({
+          timestamp: note.timestamp?.trim() ?? "",
+          text: note.text?.trim() ?? "",
+        }))
+        .filter((note) => note.text)
+        .slice(0, 500)
+    : [];
+  const chatExchanges = Array.isArray(body.chats)
+    ? body.chats
+        .map((chat) => ({
+          timestamp: chat.timestamp?.trim() ?? "",
+          question: (chat.question?.trim() ?? "").slice(0, 4_000),
+          answer: (chat.answer?.trim() ?? "").slice(0, 8_000),
+        }))
+        .filter((chat) => chat.question || chat.answer)
+        .slice(-200)
+    : [];
   const mode = body.mode === "summary" ? "summary" : "chat";
-  if (!transcript || (mode === "chat" && !question)) {
+  if (
+    (!transcript && explicitNotes.length === 0 && chatExchanges.length === 0) ||
+    (mode === "chat" && !question)
+  ) {
     return Response.json(
       {
         error:
@@ -72,27 +103,41 @@ export async function POST(request: Request) {
     );
   }
 
-  const timestampedNotes = transcript
-    .split("\n")
-    .filter((line) => line.includes("USER-ADDED NOTE AT THIS POINT"));
-  const meetingContent =
-    transcript.length > 120_000
+  const meetingTranscript =
+    (transcript?.length ?? 0) > 120_000
       ? [
-          "[Earlier transcript content was shortened to fit the analysis window.]",
-          transcript.slice(-120_000),
-          timestampedNotes.length
-            ? `All timestamped user-added notes:\n${timestampedNotes.join("\n")}`
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n")
-      : transcript;
+          "[Earlier spoken transcript content was shortened to fit the analysis window.]",
+          transcript?.slice(-120_000) ?? "",
+        ].join("\n")
+      : transcript || "[No spoken transcript was captured.]";
+  const notesContent = explicitNotes.length
+    ? explicitNotes
+        .map(
+          (note) =>
+            `[${note.timestamp || "timestamp unavailable"}] ${note.text}`,
+        )
+        .join("\n")
+    : "[No explicit user notes were added.]";
+  const chatContent = chatExchanges.length
+    ? chatExchanges
+        .map(
+          (chat) =>
+            `[${chat.timestamp || "timestamp unavailable"}]\nQuestion: ${
+              chat.question || "[No question recorded.]"
+            }\nAnswer: ${chat.answer || "[No answer recorded.]"}`,
+        )
+        .join("\n\n")
+    : "[No meeting-chat exchanges were recorded.]";
 
   const prompt = [
     `Task: ${instructions[mode]}`,
     mode === "chat" ? `Question: ${question}` : "Format: concise and scannable",
-    "Meeting content:",
-    meetingContent,
+    "Spoken meeting transcript only:",
+    meetingTranscript,
+    "Explicit user notes entered through the Meeting notes field only:",
+    notesContent,
+    "Meeting-chat questions and generated answers:",
+    chatContent,
   ]
     .filter(Boolean)
     .join("\n\n");
