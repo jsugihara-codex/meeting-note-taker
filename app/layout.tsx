@@ -10,7 +10,9 @@ export async function generateMetadata(): Promise<Metadata> {
     "localhost:3000";
   const protocol =
     requestHeaders.get("x-forwarded-proto") ??
-    (host.includes("localhost") ? "http" : "https");
+    (host.includes("localhost") || host.startsWith("127.0.0.1")
+      ? "http"
+      : "https");
   const origin = `${protocol}://${host}`;
 
   return {
