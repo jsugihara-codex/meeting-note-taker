@@ -25,8 +25,16 @@ const fallback: MetaState = {
 function cleanDisplayLines(content: string) {
   return content
     .split("\n")
-    .map((line) => line.replace(/^[-•*]\s*/, "").replace(/\*\*/g, "").trim())
+    .map((line) => line.replace(/^[-•]\s*/, "").trim())
     .filter(Boolean);
+}
+
+function cleanDisplayLine(line: string) {
+  return line
+    .replace(/^[-•]\s*/, "")
+    .replace(/^\*{1,2}/, "")
+    .replace(/\*{1,2}$/, "")
+    .trim();
 }
 
 function compatibleLine(current: string, next: string) {
@@ -34,7 +42,13 @@ function compatibleLine(current: string, next: string) {
 }
 
 function isHeadingLine(line: string) {
-  return /^(Outcome|Key decisions|Next steps|Notes):?$/i.test(line);
+  return /^(Key topics|Key decisions|Next steps|Notes):?$/i.test(
+    cleanDisplayLine(line),
+  );
+}
+
+function isTopicHeadline(line: string) {
+  return /^\*\*.+\*\*$/.test(line.trim());
 }
 
 export default function MetaDisplay() {
@@ -264,17 +278,48 @@ export default function MetaDisplay() {
           <div className="display-lines">
             {typedLines.map((line, index) => {
               const target = targetLines[index] ?? line;
-              return isHeadingLine(target) ? (
+              const cleanTarget = cleanDisplayLine(target);
+              const cleanLine = cleanDisplayLine(line);
+              const isHeading = isHeadingLine(target);
+              const displaySection =
+                targetLines
+                  .slice(0, index + 1)
+                  .reverse()
+                  .find(isHeadingLine)
+                  ?.replace(/:$/, "")
+                  .toLowerCase() ?? "";
+
+              const isKeyTopicHeadline =
+                displaySection === "key topics" && isTopicHeadline(target);
+              const isKeyTopicSummary =
+                displaySection === "key topics" &&
+                !isHeading &&
+                !isKeyTopicHeadline;
+
+              return isHeading ? (
                 <h2
                   key={`${meta.mode}-${index}`}
-                  aria-label={target.replace(/:$/, "")}
+                  aria-label={cleanTarget.replace(/:$/, "")}
                 >
-                  {line.replace(/:$/, "")}
+                  {cleanLine.replace(/:$/, "")}
                 </h2>
+              ) : isKeyTopicHeadline ? (
+                <h3
+                  className="display-topic-title"
+                  key={`${meta.mode}-${index}`}
+                  aria-label={cleanTarget}
+                >
+                  {cleanLine}
+                </h3>
               ) : (
-                <article key={`${meta.mode}-${index}`}>
-                  {meta.mode !== "chat" && <span>{String(index + 1).padStart(2, "0")}</span>}
-                  <p aria-label={target}>{line}</p>
+                <article
+                  className={isKeyTopicSummary ? "display-topic-summary" : undefined}
+                  key={`${meta.mode}-${index}`}
+                >
+                  {meta.mode !== "chat" && !isKeyTopicSummary && (
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                  )}
+                  <p aria-label={cleanTarget}>{cleanLine}</p>
                 </article>
               );
             })}
