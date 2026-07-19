@@ -6,6 +6,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "local": "next build && next start",
     "dev": "next dev",
     "dev:lan": "next dev --hostname 0.0.0.0",
     "dev:lan:https": "next dev --hostname 0.0.0.0 --experimental-https",
