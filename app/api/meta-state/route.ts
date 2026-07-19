@@ -11,9 +11,28 @@ type MetaState = {
   meetingStatus: SessionState;
 };
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 const REDIS_KEY = "meeting-room:meta-state:v2";
 const STATE_TTL_SECONDS = 6 * 60 * 60;
-let localState: MetaState | null = null;
+const localStore = globalThis as typeof globalThis & {
+  meetingRoomMetaState?: MetaState | null;
+};
+const DISPLAY_MODES: DisplayMode[] = [
+  "idle",
+  "topics",
+  "actions",
+  "chat",
+  "summary",
+];
+const SESSION_STATES: SessionState[] = [
+  "idle",
+  "connecting",
+  "recording",
+  "paused",
+  "stopped",
+];
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
@@ -54,12 +73,12 @@ function isMetaState(value: unknown): value is MetaState {
   return (
     Number.isSafeInteger(state.sequence) &&
     Number(state.sequence) >= 0 &&
-    typeof state.mode === "string" &&
+    DISPLAY_MODES.includes(state.mode as DisplayMode) &&
     typeof state.title === "string" &&
     typeof state.content === "string" &&
     typeof state.isThinking === "boolean" &&
     typeof state.updatedAt === "number" &&
-    typeof state.meetingStatus === "string"
+    SESSION_STATES.includes(state.meetingStatus as SessionState)
   );
 }
 
@@ -70,14 +89,21 @@ async function readState() {
     const stored = result?.result;
     if (typeof stored === "string") {
       const parsed = JSON.parse(stored) as unknown;
-      if (isMetaState(parsed)) localState = parsed;
+      if (isMetaState(parsed)) localStore.meetingRoomMetaState = parsed;
     }
   }
-  return localState;
+  return localStore.meetingRoomMetaState ?? null;
 }
 
 function sharedStorageRequired() {
   return process.env.VERCEL === "1" && !redisConfig();
+}
+
+function hasWriteAccess(request: Request) {
+  const requestOrigin = new URL(request.url).origin;
+  const browserOrigin = request.headers.get("origin");
+  if (browserOrigin === requestOrigin) return true;
+  return request.headers.get("sec-fetch-site") === "same-origin";
 }
 
 export async function GET(request: Request) {
@@ -96,7 +122,11 @@ export async function GET(request: Request) {
       return new Response(null, { status: 204, headers: NO_STORE_HEADERS });
     }
     return Response.json(
-      { state, shared: Boolean(redisConfig()) },
+      {
+        state,
+        shared: Boolean(redisConfig()),
+        storage: redisConfig() ? "redis" : "local-memory",
+      },
       { headers: NO_STORE_HEADERS },
     );
   } catch {
@@ -108,6 +138,13 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  if (!hasWriteAccess(request)) {
+    return Response.json(
+      { error: "The Meta Display update must come from this application." },
+      { status: 401, headers: NO_STORE_HEADERS },
+    );
+  }
+
   if (sharedStorageRequired()) {
     return Response.json(
       { error: "Shared Meta Display storage is not configured." },
@@ -124,12 +161,18 @@ export async function POST(request: Request) {
     const current = await readState();
     if (current && current.sequence >= next.sequence) {
       return Response.json(
-        { ok: true, accepted: false, state: current, shared: Boolean(redisConfig()) },
+        {
+          ok: true,
+          accepted: false,
+          state: current,
+          shared: Boolean(redisConfig()),
+          storage: redisConfig() ? "redis" : "local-memory",
+        },
         { headers: NO_STORE_HEADERS },
       );
     }
 
-    localState = next;
+    localStore.meetingRoomMetaState = next;
     const config = redisConfig();
     if (config) {
       await redisCommand([
@@ -141,7 +184,13 @@ export async function POST(request: Request) {
       ]);
     }
     return Response.json(
-      { ok: true, accepted: true, state: next, shared: Boolean(config) },
+      {
+        ok: true,
+        accepted: true,
+        state: next,
+        shared: Boolean(config),
+        storage: config ? "redis" : "local-memory",
+      },
       { headers: NO_STORE_HEADERS },
     );
   } catch {
