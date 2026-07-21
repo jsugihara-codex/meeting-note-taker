@@ -51,6 +51,10 @@ function isTopicHeadline(line: string) {
   return /^\*\*.+\*\*$/.test(line.trim());
 }
 
+function isLenslineTranslation(title: string) {
+  return /^Live translation\b/i.test(title.trim());
+}
+
 export default function MetaDisplay() {
   const [meta, setMeta] = useState<MetaState>(fallback);
   const [now, setNow] = useState(() => Date.now());
@@ -218,7 +222,7 @@ export default function MetaDisplay() {
         typingTimerRef.current = null;
       }
     };
-  }, [meta.content, meta.isThinking, meta.mode]);
+  }, [meta.content, meta.isThinking, meta.mode, meta.title]);
 
   useEffect(() => {
     const panel = displayContentRef.current;
@@ -227,10 +231,15 @@ export default function MetaDisplay() {
       panel.scrollTop = panel.scrollHeight;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [typedLines]);
+  }, [typedLines, meta.content, meta.title]);
 
   const recorderIsConnected = relayAvailable && now - meta.updatedAt < 8_000;
   const isLive = meta.meetingStatus === "recording" && recorderIsConnected;
+  const lenslineTranslation = isLenslineTranslation(meta.title);
+  const visibleLines = lenslineTranslation
+    ? cleanDisplayLines(meta.content)
+    : typedLines;
+  const visibleTargets = lenslineTranslation ? visibleLines : targetLines;
 
   return (
     <main className={`display-shell mode-${meta.mode}`}>
@@ -259,7 +268,13 @@ export default function MetaDisplay() {
         aria-live="polite"
       >
         <div className="display-kicker">
-          <span>{meta.mode === "chat" ? "Answer from the meeting" : "Meeting intelligence"}</span>
+          <span>
+            {lenslineTranslation
+              ? meta.title
+              : meta.mode === "chat"
+                ? "Answer from the meeting"
+                : "Meeting intelligence"}
+          </span>
           <i />
         </div>
         <div className="display-rule" />
@@ -276,13 +291,13 @@ export default function MetaDisplay() {
           </div>
         ) : (
           <div className="display-lines">
-            {typedLines.map((line, index) => {
-              const target = targetLines[index] ?? line;
+            {visibleLines.map((line, index) => {
+              const target = visibleTargets[index] ?? line;
               const cleanTarget = cleanDisplayLine(target);
               const cleanLine = cleanDisplayLine(line);
               const isHeading = isHeadingLine(target);
               const displaySection =
-                targetLines
+                visibleTargets
                   .slice(0, index + 1)
                   .reverse()
                   .find(isHeadingLine)

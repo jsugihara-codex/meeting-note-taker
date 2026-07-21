@@ -20,6 +20,12 @@ const NO_STORE_HEADERS = {
 const MAX_COMPLETED_LINES = 24;
 const MAX_LINE_LENGTH = 1_000;
 const MAX_SOURCE_LENGTH = 60;
+let lastLenslineSequence = 0;
+
+function nextLenslineSequence(now: number) {
+  lastLenslineSequence = Math.max(now, lastLenslineSequence + 1);
+  return lastLenslineSequence;
+}
 
 function hasRelayAccess(request: Request) {
   const relayToken = process.env.META_DISPLAY_RELAY_TOKEN?.trim();
@@ -92,6 +98,7 @@ export async function POST(request: Request) {
   const partial = sanitizeText(incoming.partial, MAX_LINE_LENGTH);
   const source = sanitizeText(incoming.sourceLabel, MAX_SOURCE_LENGTH) || "Speech";
   const content = [...completed, partial].filter(Boolean).join("\n");
+  const updatedAt = Date.now();
 
   const metaRequest = new Request(new URL("/api/meta-state", request.url), {
     method: "POST",
@@ -100,12 +107,12 @@ export async function POST(request: Request) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      sequence: incoming.sequence,
+      sequence: nextLenslineSequence(updatedAt),
       mode: "chat",
       title: `Live translation · ${source} → English`,
       content,
       isThinking: incoming.processing && !content,
-      updatedAt: Date.now(),
+      updatedAt,
       meetingStatus: incoming.live ? "recording" : "stopped",
     }),
   });

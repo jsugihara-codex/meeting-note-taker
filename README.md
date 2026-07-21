@@ -104,7 +104,11 @@ The hosted display also accepts translated caption state at
 ```
 
 Caption text is bounded and sanitized before the existing Redis-backed Meta
-Display state is updated. Keep the relay token server-side and never commit it.
+Display state is updated. The hosted route assigns a fresh monotonic timestamp
+sequence so a long-running Lensline session can resume updating the shared
+display after another Meta action. Live translation captions, including the
+current partial, render immediately. Keep the relay token server-side and never
+commit it.
 
 ## OpenAI data path
 
