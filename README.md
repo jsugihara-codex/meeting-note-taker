@@ -85,31 +85,6 @@ Only the current display mode, status, title, and response text are stored in
 the relay. The latest state expires after six hours. Meeting audio and the
 background transcript are not stored by the Meta Display relay.
 
-### Lensline translation relay
-
-The hosted display also accepts translated caption state at
-`POST /api/lensline-state`. The local Lensline server must supply
-`Authorization: Bearer <META_DISPLAY_RELAY_TOKEN>`; browser-origin or
-`Sec-Fetch-Site` headers do not grant access. The request body is:
-
-```json
-{
-  "sequence": 1784635586453,
-  "completed": ["The completed English caption."],
-  "partial": "The current caption",
-  "sourceLabel": "Japanese",
-  "live": true,
-  "processing": false
-}
-```
-
-Caption text is bounded and sanitized before the existing Redis-backed Meta
-Display state is updated. The hosted route assigns a fresh monotonic timestamp
-sequence so a long-running Lensline session can resume updating the shared
-display after another Meta action. Live translation captions, including the
-current partial, render immediately. Keep the relay token server-side and never
-commit it.
-
 ## OpenAI data path
 
 - The permanent `OPENAI_API_KEY` is read only by local Next.js server routes.
