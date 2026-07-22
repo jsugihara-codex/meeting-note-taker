@@ -296,6 +296,7 @@ export function MeetingRecorder() {
   const [finalizationState, setFinalizationState] =
     useState<FinalizationState>("idle");
   const [error, setError] = useState("");
+  const [isSpeechDetected, setIsSpeechDetected] = useState(false);
 
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -327,6 +328,13 @@ export function MeetingRecorder() {
   const completedTranscriptionItemsRef = useRef(new Set<string>());
   const paragraphItemIdsRef = useRef(new Map<string, string[]>());
   const paragraphStartedAtRef = useRef(new Map<string, number>());
+  const speechAudioContextRef = useRef<AudioContext | null>(null);
+  const speechSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const speechAnimationFrameRef = useRef<number | null>(null);
+  const speechDetectedRef = useRef(false);
+  const speechHoldUntilRef = useRef(0);
+  const speechFramesRef = useRef(0);
+  const speechNoiseFloorRef = useRef(0.008);
 
   useEffect(() => {
     elapsedRef.current = elapsed;
@@ -894,6 +902,112 @@ export function MeetingRecorder() {
     [transcriptionLanguage, transcriptionTerms],
   );
 
+  const stopSpeechDetection = useCallback(() => {
+    if (speechAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(speechAnimationFrameRef.current);
+      speechAnimationFrameRef.current = null;
+    }
+    speechSourceRef.current?.disconnect();
+    speechSourceRef.current = null;
+    const context = speechAudioContextRef.current;
+    speechAudioContextRef.current = null;
+    if (context && context.state !== "closed") {
+      void context.close().catch(() => undefined);
+    }
+    speechDetectedRef.current = false;
+    speechHoldUntilRef.current = 0;
+    speechFramesRef.current = 0;
+    setIsSpeechDetected(false);
+  }, []);
+
+  const startSpeechDetection = useCallback(
+    (stream: MediaStream) => {
+      stopSpeechDetection();
+      try {
+        const context = new AudioContext();
+        const source = context.createMediaStreamSource(stream);
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.45;
+        source.connect(analyser);
+        speechAudioContextRef.current = context;
+        speechSourceRef.current = source;
+        speechNoiseFloorRef.current = 0.003;
+        const samples = new Float32Array(analyser.fftSize);
+        const calibrationEndsAt = performance.now() + 300;
+        let lastResumeAttemptAt = 0;
+
+        const detectSpeech = () => {
+          const now = performance.now();
+          if (
+            context.state === "suspended" &&
+            now - lastResumeAttemptAt > 500
+          ) {
+            lastResumeAttemptAt = now;
+            void context.resume().catch(() => undefined);
+          }
+          analyser.getFloatTimeDomainData(samples);
+          let sumOfSquares = 0;
+          for (const sample of samples) {
+            sumOfSquares += sample * sample;
+          }
+          const rms = Math.sqrt(sumOfSquares / samples.length);
+          const microphoneTrack = stream.getAudioTracks()[0];
+          const isRecording =
+            sessionStateRef.current === "recording" &&
+            microphoneTrack?.readyState === "live" &&
+            microphoneTrack.enabled &&
+            !microphoneTrack.muted;
+
+          if (now < calibrationEndsAt) {
+            if (rms < 0.01) {
+              speechNoiseFloorRef.current =
+                speechNoiseFloorRef.current * 0.75 + rms * 0.25;
+            }
+          } else if (isRecording) {
+            const threshold = Math.max(
+              0.0035,
+              Math.min(0.015, speechNoiseFloorRef.current * 1.65),
+            );
+            if (rms > threshold) {
+              speechFramesRef.current += 1;
+              if (speechFramesRef.current >= 1) {
+                speechHoldUntilRef.current = now + 220;
+              }
+            } else {
+              speechFramesRef.current = 0;
+              speechNoiseFloorRef.current =
+                speechNoiseFloorRef.current * 0.97 + rms * 0.03;
+            }
+          } else {
+            speechFramesRef.current = 0;
+            speechHoldUntilRef.current = 0;
+          }
+
+          const nextSpeechDetected =
+            isRecording &&
+            now >= calibrationEndsAt &&
+            now < speechHoldUntilRef.current;
+          if (nextSpeechDetected !== speechDetectedRef.current) {
+            speechDetectedRef.current = nextSpeechDetected;
+            setIsSpeechDetected(nextSpeechDetected);
+          }
+          speechAnimationFrameRef.current =
+            window.requestAnimationFrame(detectSpeech);
+        };
+
+        if (context.state === "suspended") {
+          void context.resume().catch(() => undefined);
+        }
+        speechAnimationFrameRef.current =
+          window.requestAnimationFrame(detectSpeech);
+      } catch {
+        stopSpeechDetection();
+      }
+    },
+    [stopSpeechDetection],
+  );
+
   const startRecording = async () => {
     if (startAttemptRef.current) return;
     startAttemptRef.current = true;
@@ -962,6 +1076,7 @@ export function MeetingRecorder() {
       pausedDurationRef.current = 0;
       sessionStateRef.current = "recording";
       setSessionState("recording");
+      startSpeechDetection(stream);
 
       connectRealtime(stream).catch((issue: unknown) => {
         setConnection("device");
@@ -980,6 +1095,7 @@ export function MeetingRecorder() {
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
       recorderRef.current = null;
+      stopSpeechDetection();
       sessionStateRef.current = "idle";
       setSessionState("idle");
       setError(microphoneStartError(issue));
@@ -1005,6 +1121,10 @@ export function MeetingRecorder() {
     if (outboundMicrophoneTrackRef.current) {
       outboundMicrophoneTrackRef.current.enabled = false;
     }
+    speechDetectedRef.current = false;
+    speechHoldUntilRef.current = 0;
+    speechFramesRef.current = 0;
+    setIsSpeechDetected(false);
     pausedAtRef.current = Date.now();
     setSessionState("paused");
   };
@@ -1038,6 +1158,7 @@ export function MeetingRecorder() {
     sessionStateRef.current = "stopped";
     stopAudioCommits();
     stopLocalAudioSegments();
+    stopSpeechDetection();
     continueAudioSegmentsRef.current = false;
 
     const recorder = recorderRef.current;
@@ -1082,6 +1203,7 @@ export function MeetingRecorder() {
     return () => {
       stopAudioCommits();
       stopLocalAudioSegments();
+      stopSpeechDetection();
       continueAudioSegmentsRef.current = false;
       if (recorderRef.current?.state !== "inactive") {
         recorderRef.current?.stop();
@@ -1091,7 +1213,7 @@ export function MeetingRecorder() {
       dataChannelRef.current?.close();
       peerRef.current?.close();
     };
-  }, [stopAudioCommits, stopLocalAudioSegments]);
+  }, [stopAudioCommits, stopLocalAudioSegments, stopSpeechDetection]);
 
   const saveNote = (event: FormEvent) => {
     event.preventDefault();
@@ -1188,7 +1310,12 @@ export function MeetingRecorder() {
             </div>
           </div>
 
-          <section className={`recorder-card ${sessionState}`} aria-label="Recording controls">
+          <section
+            className={`recorder-card ${sessionState} ${
+              isSpeechDetected ? "speaking" : "silent"
+            }`}
+            aria-label="Recording controls"
+          >
             <div className="recorder-topline">
               <div className="recording-state">
                 <span className="recording-pulse" />
@@ -1202,7 +1329,9 @@ export function MeetingRecorder() {
                 <i
                   key={index}
                   style={{
-                    height: `${18 + ((index * 17) % 39)}%`,
+                    height: isSpeechDetected
+                      ? `${18 + ((index * 17) % 39)}%`
+                      : "2px",
                     animationDelay: `${(index % 9) * -0.11}s`,
                   }}
                 />
