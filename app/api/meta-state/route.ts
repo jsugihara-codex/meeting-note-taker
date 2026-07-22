@@ -1,3 +1,8 @@
+import {
+  createMetaDisplayRelay,
+  getMetaDisplayRelayConfig,
+} from "../../../lib/meta-display-relay";
+
 type SessionState = "idle" | "connecting" | "recording" | "paused" | "stopped";
 type DisplayMode = "idle" | "topics" | "actions" | "chat" | "summary";
 
@@ -18,6 +23,8 @@ const REDIS_KEY = "meeting-room:meta-state:v2";
 const STATE_TTL_SECONDS = 6 * 60 * 60;
 const localStore = globalThis as typeof globalThis & {
   meetingRoomMetaState?: MetaState | null;
+  meetingRoomMetaRelay?: ReturnType<typeof createMetaDisplayRelay> | null;
+  meetingRoomMetaRelayKey?: string;
 };
 const DISPLAY_MODES: DisplayMode[] = [
   "idle",
@@ -47,6 +54,8 @@ function redisConfig() {
 }
 
 function remoteDisplayOrigin(request: Request) {
+  if (request.headers.get("x-meeting-room-relay-ingest") === "1") return null;
+
   const configured = process.env.META_DISPLAY_ORIGIN?.trim();
   if (!configured) return null;
 
@@ -62,7 +71,22 @@ function remoteDisplayOrigin(request: Request) {
   }
 }
 
-async function proxyToHostedDisplay(request: Request, remoteOrigin: string) {
+function hostedRelay(remoteOrigin: string) {
+  const config = getMetaDisplayRelayConfig(remoteOrigin);
+  if (!config) return null;
+
+  const relayKey = `${config.endpoint.origin}|${config.token}`;
+  if (
+    localStore.meetingRoomMetaRelayKey !== relayKey ||
+    !localStore.meetingRoomMetaRelay
+  ) {
+    localStore.meetingRoomMetaRelay = createMetaDisplayRelay(config);
+    localStore.meetingRoomMetaRelayKey = relayKey;
+  }
+  return localStore.meetingRoomMetaRelay;
+}
+
+async function readFromHostedDisplay(request: Request, remoteOrigin: string) {
   const relayToken = process.env.META_DISPLAY_RELAY_TOKEN?.trim();
   if (!relayToken) {
     return Response.json(
@@ -76,16 +100,13 @@ async function proxyToHostedDisplay(request: Request, remoteOrigin: string) {
   remoteUrl.search = incomingUrl.search;
 
   const response = await fetch(remoteUrl, {
-    method: request.method,
+    method: "GET",
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${relayToken}`,
-      ...(request.method === "POST"
-        ? { "Content-Type": "application/json" }
-        : {}),
     },
-    body: request.method === "POST" ? await request.text() : undefined,
     cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (response.status === 204) {
@@ -169,7 +190,7 @@ export async function GET(request: Request) {
   const remoteOrigin = remoteDisplayOrigin(request);
   if (remoteOrigin) {
     try {
-      return await proxyToHostedDisplay(request, remoteOrigin);
+      return await readFromHostedDisplay(request, remoteOrigin);
     } catch {
       return Response.json(
         { error: "The hosted Meta Display is temporarily unavailable." },
@@ -212,11 +233,52 @@ export async function POST(request: Request) {
   const remoteOrigin = remoteDisplayOrigin(request);
   if (remoteOrigin) {
     try {
-      return await proxyToHostedDisplay(request, remoteOrigin);
+      const next = (await request.json()) as unknown;
+      if (!isMetaState(next) || next.content.length > 50_000) {
+        return Response.json(
+          { error: "Invalid meeting state." },
+          { status: 400, headers: NO_STORE_HEADERS },
+        );
+      }
+
+      const relay = hostedRelay(remoteOrigin);
+      if (!relay) {
+        return Response.json(
+          { error: "The hosted Meta Display relay token is not configured." },
+          { status: 503, headers: NO_STORE_HEADERS },
+        );
+      }
+
+      const current = localStore.meetingRoomMetaState;
+      if (current && current.sequence >= next.sequence) {
+        return Response.json(
+          {
+            ok: true,
+            accepted: false,
+            state: current,
+            shared: true,
+            storage: "hosted-relay",
+          },
+          { headers: NO_STORE_HEADERS },
+        );
+      }
+
+      localStore.meetingRoomMetaState = next;
+      relay.enqueue(next);
+      return Response.json(
+        {
+          ok: true,
+          accepted: true,
+          state: next,
+          shared: true,
+          storage: "hosted-relay",
+        },
+        { headers: NO_STORE_HEADERS },
+      );
     } catch {
       return Response.json(
-        { error: "The hosted Meta Display is temporarily unavailable." },
-        { status: 503, headers: NO_STORE_HEADERS },
+        { error: "Invalid meeting state." },
+        { status: 400, headers: NO_STORE_HEADERS },
       );
     }
   }
