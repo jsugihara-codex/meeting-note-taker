@@ -288,10 +288,14 @@ button {
   border-radius: 4px;
   background: #cfd6d2;
   transform-origin: center;
+  transition: height 140ms ease, opacity 140ms ease;
 }
 
 .recording .waveform i {
   background: linear-gradient(180deg, #eea095 0%, var(--red) 100%);
+}
+
+.recording.speaking .waveform i {
   animation: wave 0.82s ease-in-out infinite alternate;
 }
 
@@ -1244,7 +1248,7 @@ button {
   max-width: 1050px;
   margin: 0;
   color: #dae4df;
-  font-size: clamp(10px, 1.225vw, 19px);
+  font-size: clamp(20px, 2.45vw, 38px);
   font-weight: 410;
   letter-spacing: -0.025em;
   line-height: 1.28;
@@ -1254,7 +1258,7 @@ button {
 .mode-chat .display-lines p {
   max-width: 1050px;
   color: #f0f5f2;
-  font-size: clamp(13px, 1.75vw, 26px);
+  font-size: clamp(26px, 3.5vw, 52px);
   line-height: 1.22;
 }
 
@@ -1379,8 +1383,8 @@ button {
   .display-status { font-size: 10px; }
   .display-content { padding: 22px 0 32px; }
   .display-lines article { grid-template-columns: 29px minmax(0, 1fr); gap: 10px; }
-  .display-lines p { font-size: 10px; }
-  .mode-chat .display-lines p { font-size: 13.5px; }
+  .display-lines p { font-size: 20px; }
+  .mode-chat .display-lines p { font-size: 27px; }
   .display-footer { align-items: flex-end; gap: 12px; }
   .display-footer time { text-align: right; }
 }
