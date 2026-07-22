@@ -74,10 +74,14 @@ never commit it.
    through the local `/api/analyze` route.
 2. The recorder immediately publishes a thinking state to its local
    `/api/meta-state` route.
-3. The local route authenticates to the hosted Vercel relay with
-   `META_DISPLAY_RELAY_TOKEN`.
-4. The independently opened Meta Display polls the Redis-backed state and shows
-   the thinking indicator.
+3. The local route immediately acknowledges the browser, then authenticates to
+   the hosted `/api/display-ingest` endpoint with
+   `META_DISPLAY_RELAY_TOKEN`. It keeps only the newest pending update, applies
+   bounded retries to transient failures, and falls back to `/api/meta-state`
+   while an older hosted deployment is being replaced.
+4. The hosted endpoint writes sequence-checked state to Redis. The independently
+   opened Meta Display polls that shared state every 300ms and shows the thinking
+   indicator without reloading the page.
 5. When the local OpenAI response returns, the display reveals the new response
    one character at a time.
 
